@@ -15,31 +15,45 @@ st.markdown("""
     <style>
         html, body, [class*="css"] { font-family: 'Arial', sans-serif !important; }
         
-        /* BOTÃO VERDE: Adicionar, Confirmar, Salvar (Para botões normais E de formulário) */
+        /* Forçar TODOS os botões primários a serem VERDES */
+        button[data-testid="baseButton-primary"],
         div.stButton > button[kind="primary"],
         div.stFormSubmitButton > button[kind="primary"] { 
             background-color: #2E7D32 !important; 
+            border-color: #2E7D32 !important;
             color: white !important; 
             border-radius: 6px; 
             font-weight: bold; 
-            border: none;
             width: 100%;
         }
+        button[data-testid="baseButton-primary"]:hover,
         div.stButton > button[kind="primary"]:hover,
         div.stFormSubmitButton > button[kind="primary"]:hover { 
             background-color: #1B5E20 !important; 
+            border-color: #1B5E20 !important;
         }
         
-        /* Estilo para envolver botões de perigo (Vermelhos) */
-        .btn-danger > div > button { 
+        /* Forçar botões secundários a não piscarem vermelho no hover */
+        button[data-testid="baseButton-secondary"]:hover,
+        div.stButton > button[kind="secondary"]:hover,
+        div.stFormSubmitButton > button[kind="secondary"]:hover {
+            border-color: #2E7D32 !important;
+            color: #2E7D32 !important;
+        }
+        
+        /* Botões de Perigo (Vermelhos) estritos */
+        .btn-danger > div > button,
+        .btn-danger button { 
             background-color: #d32f2f !important; 
+            border-color: #d32f2f !important;
             color: white !important; 
             border-radius: 6px; 
             font-weight: bold; 
-            border: none;
         }
-        .btn-danger > div > button:hover { 
+        .btn-danger > div > button:hover,
+        .btn-danger button:hover { 
             background-color: #b71c1c !important; 
+            border-color: #b71c1c !important;
         }
         
         thead tr th:first-child {display:none}

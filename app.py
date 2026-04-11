@@ -523,6 +523,10 @@ else:
         
         df_ev_todos = buscar_dados('eventos', order='id', order_desc=True)
         
+        # --- PROTEÇÃO CONTRA TABELA VAZIA ---
+        if df_ev_todos.empty:
+            df_ev_todos = pd.DataFrame(columns=['id', 'nome', 'descricao', 'data_evento', 'meta_publico', 'status'])
+        
         # --- ETAPA 1: PLANEJAMENTO ---
         if etapa_evento == "1. Planejamento (Criar & Orçar)":
             st.subheader("A. Novo Evento")

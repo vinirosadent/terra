@@ -14,10 +14,32 @@ st.set_page_config(page_title="App da Terra | Gestão", page_icon="🌿", layout
 st.markdown("""
     <style>
         html, body, [class*="css"] { font-family: 'Arial', sans-serif !important; }
-        div.stButton > button[kind="primary"] { background-color: #2E7D32 !important; color: white !important; border-radius: 6px; font-weight: bold; border: none;}
-        div.stButton > button[kind="primary"]:hover { background-color: #1B5E20 !important; }
-        .btn-danger > button { background-color: #d32f2f !important; color: white !important; border-radius: 6px; font-weight: bold; border: none;}
-        .btn-danger > button:hover { background-color: #b71c1c !important; }
+        
+        /* BOTÃO VERDE: Adicionar, Confirmar, Salvar */
+        div.stButton > button[kind="primary"] { 
+            background-color: #2E7D32 !important; 
+            color: white !important; 
+            border-radius: 6px; 
+            font-weight: bold; 
+            border: none;
+            width: 100%;
+        }
+        div.stButton > button[kind="primary"]:hover { 
+            background-color: #1B5E20 !important; 
+        }
+        
+        /* Estilo para envolver botões de perigo */
+        .btn-danger > div > button { 
+            background-color: #d32f2f !important; 
+            color: white !important; 
+            border-radius: 6px; 
+            font-weight: bold; 
+            border: none;
+        }
+        .btn-danger > div > button:hover { 
+            background-color: #b71c1c !important; 
+        }
+        
         thead tr th:first-child {display:none}
         tbody th {display:none}
         .login-box { max-width: 400px; margin: 0 auto; padding: 30px; background-color: #f9f9f9; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); text-align: center; }
@@ -123,10 +145,6 @@ else:
             st.title("🌿 App da Terra")
             
         st.markdown(f"**Logado como:** {st.session_state.user}")
-        if st.button("Sair (Logout)", key="btn_logout"):
-            st.session_state.logged_in = False
-            st.session_state.user = ""
-            st.rerun()
             
         st.markdown("---")
         menu = st.radio("Módulos", [
@@ -136,8 +154,16 @@ else:
             "📅 Gestão de Eventos",
             "🎯 Orçamento & Metas",
             "👤 Gestão de Clientes",
-            "⚙️ Configurações"
+            "⚙️ Configurações",
+            "📜 Log de Lançamentos"
         ])
+        
+        st.markdown("<br>" * 10, unsafe_allow_html=True)
+        st.markdown("---")
+        if st.button("Sair (Logout)", key="btn_logout"):
+            st.session_state.logged_in = False
+            st.session_state.user = ""
+            st.rerun()
 
     # ==========================================
     # 1. INTELIGÊNCIA (BI)
@@ -510,7 +536,7 @@ else:
                     st.error("Preencha Centro de Custo e um Valor válido.")
 
     # ==========================================
-    # 4. GESTÃO DE EVENTOS (O NOVO FUNIL ERP)
+    # 4. GESTÃO DE EVENTOS
     # ==========================================
     elif menu == "📅 Gestão de Eventos":
         st.title("📅 Funil de Projetos e Eventos")
@@ -522,8 +548,6 @@ else:
         st.markdown("---")
         
         df_ev_todos = buscar_dados('eventos', order='id', order_desc=True)
-        
-        # --- PROTEÇÃO CONTRA TABELA VAZIA ---
         if df_ev_todos.empty:
             df_ev_todos = pd.DataFrame(columns=['id', 'nome', 'descricao', 'data_evento', 'meta_publico', 'status'])
         
@@ -762,11 +786,14 @@ else:
                                     st.session_state.sucesso_msg = "Lançamento atualizado com sucesso!"
                                     resetar_form()
                                     st.rerun()
-                                if c_btn2.button("Remover Lançamento", use_container_width=True):
+                                    
+                                st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
+                                if st.button("Remover Lançamento", use_container_width=True):
                                     deletar_dados('lancamentos', 'id', l_id)
                                     st.session_state.sucesso_msg = "Lançamento excluído permanentemente!"
                                     resetar_form()
                                     st.rerun()
+                                st.markdown('</div>', unsafe_allow_html=True)
                         else:
                             st.info("Nenhum lançamento encontrado com estes filtros.")
                     else: 
@@ -873,7 +900,7 @@ else:
                 st.markdown("</div>", unsafe_allow_html=True)
 
                 st.markdown("---")
-                if st.button("🔒 Finalizar Reconciliação e Encerrar Evento", use_container_width=True):
+                if st.button("🔒 Finalizar Reconciliação e Encerrar Evento", use_container_width=True, type="primary"):
                     atualizar_dados('eventos', {'status': 'Encerrado'}, 'id', ev_id_close)
                     st.session_state.sucesso_msg = "Evento encerrado com sucesso! Veja o resultado final em Relatório (SOA)."
                     resetar_form()
@@ -988,16 +1015,12 @@ else:
     # ==========================================
     # 5. ORÇAMENTO & METAS
     # ==========================================
-    # ==========================================
-    # 5. ORÇAMENTO & METAS
-    # ==========================================
     elif menu == "🎯 Orçamento & Metas":
         st.title("🎯 Planejamento de Orçamentos Mensais")
         
         df_cat = buscar_dados('categorias_saida')
         categorias = df_cat['nome'].tolist() if not df_cat.empty else []
         
-        # Filtro de Ano para visualizar e cadastrar
         ano_atual = date.today().year
         c_ano1, c_ano2 = st.columns([1, 4])
         ano_selecionado = c_ano1.selectbox("📅 Ano de Planejamento", [ano_atual - 1, ano_atual, ano_atual + 1], index=1)
@@ -1044,39 +1067,24 @@ else:
         st.markdown("---")
         st.subheader(f"📊 Resumo Orçamentário - {ano_selecionado}")
         
-        # Puxar dados do Supabase
         df_orc_ano = buscar_dados('orcamentos', eq={'ano': ano_selecionado})
         
         if not df_orc_ano.empty:
-            # Extrair apenas o número do mês para as colunas (ex: de '2026-03' para '03')
             df_orc_ano['mes_curto'] = df_orc_ano['mes'].apply(lambda x: x.split('-')[1])
+            df_pivot = df_orc_ano.pivot_table(index=['tipo', 'categoria'], columns='mes_curto', values='valor', aggfunc='sum').fillna(0)
             
-            # Criar Tabela Pivot: Linhas = Categoria, Colunas = Meses
-            df_pivot = df_orc_ano.pivot_table(
-                index=['tipo', 'categoria'], 
-                columns='mes_curto', 
-                values='valor', 
-                aggfunc='sum'
-            ).fillna(0)
-            
-            # Garantir que as 12 colunas de meses apareçam, mesmo se não tiver dados
             for m in range(1, 13):
                 m_str = f"{m:02d}"
                 if m_str not in df_pivot.columns:
                     df_pivot[m_str] = 0.0
             
-            # Ordenar colunas de 01 a 12
             meses_cols = [f"{m:02d}" for m in range(1, 13)]
             df_pivot = df_pivot[meses_cols]
-            
-            # Somatório da Linha (Total Anual)
             df_pivot['Total Anual'] = df_pivot.sum(axis=1)
             
-            # Formatação final para o Streamlit
             df_display = df_pivot.reset_index()
             df_display = df_display.rename(columns={'tipo': 'Natureza', 'categoria': 'Item / Categoria'})
             
-            # Dividir a visualização entre Receitas e Despesas para ficar organizado
             df_receitas = df_display[df_display['Natureza'] == 'Receita'].drop(columns=['Natureza'])
             df_despesas = df_display[df_display['Natureza'] == 'Despesa'].drop(columns=['Natureza'])
             
@@ -1088,7 +1096,6 @@ else:
                 st.markdown("#### 🔴 Despesas Previstas")
                 st.dataframe(df_despesas.style.format({c: "R$ {:.2f}" for c in meses_cols + ['Total Anual']}), use_container_width=True)
             
-            # Resumo e Balanço
             st.markdown("#### 🧮 Balanço Anual Projetado")
             tot_rec = df_receitas['Total Anual'].sum() if not df_receitas.empty else 0.0
             tot_desp = df_despesas['Total Anual'].sum() if not df_despesas.empty else 0.0
@@ -1102,7 +1109,7 @@ else:
             st.info(f"Nenhum orçamento planejado para o ano de {ano_selecionado}. Cadastre acima para visualizar a tabela de planejamento.")
 
     # ==========================================
-    # 6. GESTÃO DE CLIENTES (REATIVA)
+    # 6. GESTÃO DE CLIENTES
     # ==========================================
     elif menu == "👤 Gestão de Clientes":
         st.title("👤 Cadastro de Clientes e Contratos")
@@ -1220,7 +1227,11 @@ else:
                     a_inativar = st.selectbox("Selecione o Cliente para inativar:", df_ativos_in['nome'].tolist())
                     data_inativacao = st.date_input("Data Oficial do Cancelamento/Saída", value=date.today(), format="DD/MM/YYYY")
                     
-                    if st.form_submit_button("Confirmar Inativação", type="primary"):
+                    st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
+                    submit_ina = st.form_submit_button("Confirmar Inativação")
+                    st.markdown('</div>', unsafe_allow_html=True)
+                    
+                    if submit_ina:
                         aluno_id_stat = int(df_ativos_in[df_ativos_in['nome'] == a_inativar]['id'].iloc[0])
                         
                         df_l = buscar_dados('lancamentos', eq={'aluno_id': aluno_id_stat, 'tipo': 'Entrada'})
@@ -1437,3 +1448,63 @@ else:
                         st.rerun()
                     else:
                         st.error("Por favor, preencha os dois campos.")
+
+    # ==========================================
+    # 8. LOG DE LANÇAMENTOS (O "DIÁRIO")
+    # ==========================================
+    elif menu == "📜 Log de Lançamentos":
+        st.title("📜 Diário de Lançamentos (Log)")
+        st.write("Confira abaixo tudo o que foi registrado no sistema.")
+
+        df_log = buscar_dados('lancamentos', order='id', order_desc=True)
+        
+        if df_log.empty:
+            st.info("Nenhum lançamento encontrado.")
+        else:
+            df_log['data'] = pd.to_datetime(df_log['data'])
+            
+            c1, c2, c3 = st.columns([2, 2, 2])
+            f_tipo = c1.selectbox("Filtrar Tipo:", ["Ver Tudo", "Entrada", "Saida"])
+            
+            df_log['Mes/Ano'] = df_log['data'].dt.strftime('%m/%Y')
+            meses_disp = ["Ver Tudo"] + sorted(df_log['Mes/Ano'].unique().tolist(), reverse=True)
+            f_mes = c2.selectbox("Filtrar Mês:", meses_disp)
+
+            df_f = df_log.copy()
+            if f_tipo != "Ver Tudo":
+                df_f = df_f[df_f['tipo'] == f_tipo]
+            if f_mes != "Ver Tudo":
+                df_f = df_f[df_f['Mes/Ano'] == f_mes]
+
+            df_f['Data_Formatada'] = df_f['data'].dt.strftime('%d/%m/%Y')
+            
+            df_display = df_f[['id', 'Data_Formatada', 'tipo', 'categoria', 'descricao', 'valor_bruto', 'metodo_pagamento']].rename(columns={
+                'id': 'ID',
+                'Data_Formatada': 'Data',
+                'tipo': 'Tipo',
+                'categoria': 'Categoria',
+                'descricao': 'Detalhes/Nome',
+                'valor_bruto': 'Valor Bruto (R$)',
+                'metodo_pagamento': 'Método'
+            })
+
+            st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+            st.markdown("---")
+            st.subheader("⚠️ Ajustes de Lançamento")
+            st.write("Caso precise remover um erro, selecione o ID abaixo:")
+            
+            id_opcoes = df_f['id'].astype(str) + " - " + df_f['descricao'].astype(str) + " (R$ " + df_f['valor_bruto'].astype(str) + ")"
+            id_remover_str = st.selectbox("Lançamento para remover:", ["Selecione..."] + id_opcoes.tolist())
+            
+            st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
+            if st.button("Deletar Lançamento Permanentemente"):
+                if id_remover_str != "Selecione...":
+                    id_real = int(id_remover_str.split(" - ")[0])
+                    deletar_dados('lancamentos', 'id', id_real)
+                    st.session_state.sucesso_msg = "Lançamento excluído com sucesso!"
+                    resetar_form()
+                    st.rerun()
+                else:
+                    st.error("Selecione um lançamento válido.")
+            st.markdown('</div>', unsafe_allow_html=True)

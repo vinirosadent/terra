@@ -15,8 +15,9 @@ st.markdown("""
     <style>
         html, body, [class*="css"] { font-family: 'Arial', sans-serif !important; }
         
-        /* BOTÃO VERDE: Adicionar, Confirmar, Salvar */
-        div.stButton > button[kind="primary"] { 
+        /* BOTÃO VERDE: Adicionar, Confirmar, Salvar (Para botões normais E de formulário) */
+        div.stButton > button[kind="primary"],
+        div.stFormSubmitButton > button[kind="primary"] { 
             background-color: #2E7D32 !important; 
             color: white !important; 
             border-radius: 6px; 
@@ -24,11 +25,12 @@ st.markdown("""
             border: none;
             width: 100%;
         }
-        div.stButton > button[kind="primary"]:hover { 
+        div.stButton > button[kind="primary"]:hover,
+        div.stFormSubmitButton > button[kind="primary"]:hover { 
             background-color: #1B5E20 !important; 
         }
         
-        /* Estilo para envolver botões de perigo */
+        /* Estilo para envolver botões de perigo (Vermelhos) */
         .btn-danger > div > button { 
             background-color: #d32f2f !important; 
             color: white !important; 

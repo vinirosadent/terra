@@ -60,11 +60,20 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- CONEXÃO COM O SUPABASE ---
-@st.cache_resource
-def init_connection():
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
-    return create_client(url, key)
+def init_connection() -> Client:
+    """Cliente Supabase por sessao (sem @st.cache_resource).
+
+    O Supabase mantem estado de auth (JWT) interno apos sign_in_with_password.
+    Compartilhar entre sessoes via cache_resource causaria bugs de auth.
+    Mantemos uma instancia por sessao via st.session_state.
+    """
+    if "supabase_client" not in st.session_state:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_KEY"]
+        st.session_state.supabase_client = create_client(url, key)
+    return st.session_state.supabase_client
+
+
 
 supabase = init_connection()
 
@@ -109,11 +118,17 @@ if "logged_in" not in st.session_state:
 if "user" not in st.session_state:
     st.session_state.user = ""
 
+if "access_token" not in st.session_state:
+    st.session_state.access_token = ""
+
+if "refresh_token" not in st.session_state:
+    st.session_state.refresh_token = ""
+
 def resetar_form():
     st.session_state.form_key += 1
 
 # ==========================================
-# 0. TELA DE LOGIN E AUTENTICAÇÃO
+# 0. TELA DE LOGIN E AUTENTICAÇÃO (Supabase Auth — Etapa B)
 # ==========================================
 if not st.session_state.logged_in:
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -124,22 +139,39 @@ if not st.session_state.logged_in:
             st.image("logo.jpeg", use_container_width=True)
         else:
             st.markdown("<h2 style='color:#2E7D32; font-family:Arial;'>App da Terra</h2>", unsafe_allow_html=True)
-            
+
         st.markdown("<h4>Acesso Restrito</h4>", unsafe_allow_html=True)
-        
+
         with st.form("login_form"):
-            usuario = st.text_input("Usuário", placeholder="Digite seu usuário")
+            email = st.text_input("Email", placeholder="Digite seu email")
             senha = st.text_input("Senha", type="password", placeholder="Digite sua senha")
             submit = st.form_submit_button("Entrar", type="primary", use_container_width=True)
-            
+
             if submit:
-                df_auth = buscar_dados("perfil_acesso", eq={'usuario': usuario, 'senha': senha})
-                if not df_auth.empty:
-                    st.session_state.logged_in = True
-                    st.session_state.user = usuario
-                    st.rerun()
+                if not email or not senha:
+                    st.error("❌ Preencha email e senha.")
                 else:
-                    st.error("❌ Usuário ou senha incorretos.")
+                    try:
+                        sb = init_connection()
+                        response = sb.auth.sign_in_with_password({
+                            "email": email,
+                            "password": senha
+                        })
+                        if response.session and response.user:
+                            st.session_state.logged_in = True
+                            st.session_state.user = response.user.email or ""
+                            st.session_state.access_token = response.session.access_token
+                            st.session_state.refresh_token = response.session.refresh_token
+
+                            st.rerun()
+                        else:
+                            st.error("❌ Email ou senha incorretos.")
+                    except Exception as e:
+                        msg = str(e)
+                        if "Invalid login credentials" in msg or "invalid_credentials" in msg.lower():
+                            st.error("❌ Email ou senha incorretos.")
+                        else:
+                            st.error(f"❌ Erro ao fazer login: {msg}")
         st.markdown("</div>", unsafe_allow_html=True)
 
 # Se estiver logado, exibe todo o sistema:
@@ -174,8 +206,23 @@ else:
         st.markdown("<br>" * 10, unsafe_allow_html=True)
         st.markdown("---")
         if st.button("Sair (Logout)", key="btn_logout"):
+            # Avisa o Supabase para invalidar o JWT no servidor
+            try:
+                sb = init_connection()
+                sb.auth.sign_out()
+            except Exception:
+                pass
+
+            # Limpa session_state de auth
             st.session_state.logged_in = False
             st.session_state.user = ""
+            st.session_state.access_token = ""
+            st.session_state.refresh_token = ""
+
+            # Forca recriacao do cliente Supabase na proxima execucao
+            if "supabase_client" in st.session_state:
+                del st.session_state.supabase_client
+
             st.rerun()
 
     # ==========================================
@@ -1444,23 +1491,24 @@ else:
                         st.rerun()
                     st.markdown("</div>", unsafe_allow_html=True)
                     
-        elif aba_config == "Segurança (Login)":
-            st.subheader("Alterar Credenciais de Acesso")
-            st.write("Atualize o utilizador e a senha para aceder ao sistema. Em caso de perda, deverá contactar o administrador da base de dados (Supabase).")
-            
-            with st.form("f_seguranca"):
-                n_user = st.text_input("Novo Nome de Usuário", placeholder="Digite o novo login")
-                n_pwd = st.text_input("Nova Senha", type="password", placeholder="Digite a nova senha segura")
-                
-                if st.form_submit_button("Salvar Novas Credenciais", type="primary"):
-                    if n_user.strip() != "" and n_pwd.strip() != "":
-                        atualizar_dados('perfil_acesso', {'usuario': n_user, 'senha': n_pwd}, 'id', 1)
-                        st.session_state.user = n_user
-                        st.session_state.sucesso_msg = "Credenciais atualizadas com sucesso! Utilize-as no seu próximo login."
-                        resetar_form()
-                        st.rerun()
-                    else:
-                        st.error("Por favor, preencha os dois campos.")
+        # === DESATIVADO Etapa B: troca de senha agora gerenciada pelo Supabase Auth Dashboard ===
+        # elif aba_config == "Segurança (Login)":
+        #     st.subheader("Alterar Credenciais de Acesso")
+        #     st.write("Atualize o utilizador e a senha para aceder ao sistema. Em caso de perda, deverá contactar o administrador da base de dados (Supabase).")
+        #
+        #     with st.form("f_seguranca"):
+        #         n_user = st.text_input("Novo Nome de Usuário", placeholder="Digite o novo login")
+        #         n_pwd = st.text_input("Nova Senha", type="password", placeholder="Digite a nova senha segura")
+        #
+        #         if st.form_submit_button("Salvar Novas Credenciais", type="primary"):
+        #             if n_user.strip() != "" and n_pwd.strip() != "":
+        #                 atualizar_dados('perfil_acesso', {'usuario': n_user, 'senha': n_pwd}, 'id', 1)
+        #                 st.session_state.user = n_user
+        #                 st.session_state.sucesso_msg = "Credenciais atualizadas com sucesso! Utilize-as no seu próximo login."
+        #                 resetar_form()
+        #                 st.rerun()
+        #             else:
+        #                 st.error("Por favor, preencha os dois campos.")
 
     # ==========================================
     # 8. LOG DE LANÇAMENTOS (O "DIÁRIO")

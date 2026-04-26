@@ -3,3 +3,7 @@
 config.toml
 *.secrets
 *.env
+
+# Backups locais e ferramentas de IDE
+*.backup-*
+.claude/

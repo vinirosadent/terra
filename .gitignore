@@ -1,1 +1,5 @@
 .streamlit/secrets.toml
+# Secrets fora do padrao Streamlit
+config.toml
+*.secrets
+*.env

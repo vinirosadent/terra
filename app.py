@@ -66,11 +66,32 @@ def init_connection() -> Client:
     O Supabase mantem estado de auth (JWT) interno apos sign_in_with_password.
     Compartilhar entre sessoes via cache_resource causaria bugs de auth.
     Mantemos uma instancia por sessao via st.session_state.
+
+    Defesa para RLS (Etapa C): se a sessao do Streamlit ja tem tokens
+    guardados de um login anterior mas o cliente foi descartado (rerun
+    pesado, inatividade), restauramos o JWT antes de retornar. Sem isso,
+    RLS bloquearia queries silenciosamente em cenarios de borda.
     """
     if "supabase_client" not in st.session_state:
         url = st.secrets["SUPABASE_URL"]
         key = st.secrets["SUPABASE_KEY"]
         st.session_state.supabase_client = create_client(url, key)
+
+        # Restaura sessao autenticada se ja havia login ativo nesta aba
+        access_token = st.session_state.get("access_token", "")
+        refresh_token = st.session_state.get("refresh_token", "")
+        if access_token and refresh_token:
+            try:
+                st.session_state.supabase_client.auth.set_session(
+                    access_token, refresh_token
+                )
+            except Exception:
+                # Token expirado ou invalido: derruba o login local
+                # e o usuario sera redirecionado para a tela de login
+                st.session_state.logged_in = False
+                st.session_state.access_token = ""
+                st.session_state.refresh_token = ""
+
     return st.session_state.supabase_client
 
 

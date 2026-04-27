@@ -7,3 +7,10 @@ config.toml
 # Backups locais e ferramentas de IDE
 *.backup-*
 .claude/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Virtual env
+venv/

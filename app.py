@@ -6,7 +6,8 @@ import plotly.graph_objects as go
 import json
 import base64
 import os
-from db import init_connection, buscar_dados, inserir_dados, atualizar_dados, deletar_dados
+from db import buscar_dados, inserir_dados, atualizar_dados, deletar_dados
+from auth import inicializar_session_state_auth, mostrar_tela_login, fazer_logout
 
 # --- CONFIGURAÇÃO DA PÁGINA E ESTILIZAÇÃO ---
 st.set_page_config(page_title="App da Terra | Gestão", page_icon="🌿", layout="wide")
@@ -28,17 +29,7 @@ def extrair_item_evento(desc, nome_evento):
 if "form_key" not in st.session_state:
     st.session_state.form_key = 0
 
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-
-if "user" not in st.session_state:
-    st.session_state.user = ""
-
-if "access_token" not in st.session_state:
-    st.session_state.access_token = ""
-
-if "refresh_token" not in st.session_state:
-    st.session_state.refresh_token = ""
+inicializar_session_state_auth()
 
 def resetar_form():
     st.session_state.form_key += 1
@@ -47,48 +38,7 @@ def resetar_form():
 # 0. TELA DE LOGIN E AUTENTICAÇÃO (Supabase Auth — Etapa B)
 # ==========================================
 if not st.session_state.logged_in:
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        st.markdown("<div class='login-box'>", unsafe_allow_html=True)
-        if os.path.exists("logo.jpeg"):
-            st.image("logo.jpeg", use_container_width=True)
-        else:
-            st.markdown("<h2 style='color:#2E7D32; font-family:Arial;'>App da Terra</h2>", unsafe_allow_html=True)
-
-        st.markdown("<h4>Acesso Restrito</h4>", unsafe_allow_html=True)
-
-        with st.form("login_form"):
-            email = st.text_input("Email", placeholder="Digite seu email")
-            senha = st.text_input("Senha", type="password", placeholder="Digite sua senha")
-            submit = st.form_submit_button("Entrar", type="primary", use_container_width=True)
-
-            if submit:
-                if not email or not senha:
-                    st.error("❌ Preencha email e senha.")
-                else:
-                    try:
-                        sb = init_connection()
-                        response = sb.auth.sign_in_with_password({
-                            "email": email,
-                            "password": senha
-                        })
-                        if response.session and response.user:
-                            st.session_state.logged_in = True
-                            st.session_state.user = response.user.email or ""
-                            st.session_state.access_token = response.session.access_token
-                            st.session_state.refresh_token = response.session.refresh_token
-
-                            st.rerun()
-                        else:
-                            st.error("❌ Email ou senha incorretos.")
-                    except Exception as e:
-                        msg = str(e)
-                        if "Invalid login credentials" in msg or "invalid_credentials" in msg.lower():
-                            st.error("❌ Email ou senha incorretos.")
-                        else:
-                            st.error(f"❌ Erro ao fazer login: {msg}")
-        st.markdown("</div>", unsafe_allow_html=True)
+    mostrar_tela_login()
 
 # Se estiver logado, exibe todo o sistema:
 else:
@@ -122,23 +72,7 @@ else:
         st.markdown("<br>" * 10, unsafe_allow_html=True)
         st.markdown("---")
         if st.button("Sair (Logout)", key="btn_logout"):
-            # Avisa o Supabase para invalidar o JWT no servidor
-            try:
-                sb = init_connection()
-                sb.auth.sign_out()
-            except Exception:
-                pass
-
-            # Limpa session_state de auth
-            st.session_state.logged_in = False
-            st.session_state.user = ""
-            st.session_state.access_token = ""
-            st.session_state.refresh_token = ""
-
-            # Forca recriacao do cliente Supabase na proxima execucao
-            if "supabase_client" in st.session_state:
-                del st.session_state.supabase_client
-
+            fazer_logout()
             st.rerun()
 
     # ==========================================

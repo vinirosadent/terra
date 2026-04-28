@@ -8,6 +8,7 @@ import base64
 import os
 from db import buscar_dados, inserir_dados, atualizar_dados, deletar_dados
 from auth import inicializar_session_state_auth, mostrar_tela_login, fazer_logout
+from utils import extrair_item_evento, resetar_form
 
 # --- CONFIGURAÇÃO DA PÁGINA E ESTILIZAÇÃO ---
 st.set_page_config(page_title="App da Terra | Gestão", page_icon="🌿", layout="wide")
@@ -17,22 +18,12 @@ st.set_page_config(page_title="App da Terra | Gestão", page_icon="🌿", layout
 from styles import aplicar_estilo_global
 aplicar_estilo_global()
 
-def extrair_item_evento(desc, nome_evento):
-    prefix = f"[{nome_evento}] "
-    if isinstance(desc, str):
-        if desc.startswith(prefix):
-            s = desc[len(prefix):]
-            return s.split(" - ")[0].strip()
-    return desc
-
 # --- GERENCIAMENTO DE ESTADO (LOGIN E FORMS) ---
 if "form_key" not in st.session_state:
     st.session_state.form_key = 0
 
 inicializar_session_state_auth()
 
-def resetar_form():
-    st.session_state.form_key += 1
 
 # ==========================================
 # 0. TELA DE LOGIN E AUTENTICAÇÃO (Supabase Auth — Etapa B)

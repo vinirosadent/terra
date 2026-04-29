@@ -1,14 +1,6 @@
 import streamlit as st
-import pandas as pd
-from datetime import date, datetime, timedelta
-import plotly.express as px
-import plotly.graph_objects as go
-import json
-import base64
 import os
-from db import buscar_dados, inserir_dados, atualizar_dados, deletar_dados
 from auth import inicializar_session_state_auth, mostrar_tela_login, fazer_logout
-from utils import extrair_item_evento, resetar_form
 from paginas import log as pg_log
 from paginas import configuracoes as pg_configuracoes
 from paginas import clientes as pg_clientes

@@ -29,7 +29,7 @@ def render():
 
     st.title("⚙️ Cadastros e Configurações")
 
-    aba_config = st.radio("Selecione a Configuração:", ["Serviços / Modalidades", "Centros de Custo", "Impostos / Taxas", "Segurança (Login)"], horizontal=True, key=f"rad_conf_{fk}")
+    aba_config = st.radio("Selecione a Configuração:", ["Serviços / Modalidades", "Centros de Custo", "Impostos / Taxas"], horizontal=True, key=f"rad_conf_{fk}")
     st.markdown("---")
 
     if aba_config == "Serviços / Modalidades":
@@ -158,21 +158,3 @@ def render():
                     st.rerun()
                 st.markdown("</div>", unsafe_allow_html=True)
 
-    # === DESATIVADO Etapa B: troca de senha agora gerenciada pelo Supabase Auth Dashboard ===
-    # elif aba_config == "Segurança (Login)":
-    #     st.subheader("Alterar Credenciais de Acesso")
-    #     st.write("Atualize o utilizador e a senha para aceder ao sistema. Em caso de perda, deverá contactar o administrador da base de dados (Supabase).")
-    #
-    #     with st.form("f_seguranca"):
-    #         n_user = st.text_input("Novo Nome de Usuário", placeholder="Digite o novo login")
-    #         n_pwd = st.text_input("Nova Senha", type="password", placeholder="Digite a nova senha segura")
-    #
-    #         if st.form_submit_button("Salvar Novas Credenciais", type="primary"):
-    #             if n_user.strip() != "" and n_pwd.strip() != "":
-    #                 atualizar_dados('perfil_acesso', {'usuario': n_user, 'senha': n_pwd}, 'id', 1)
-    #                 st.session_state.user = n_user
-    #                 st.session_state.sucesso_msg = "Credenciais atualizadas com sucesso! Utilize-as no seu próximo login."
-    #                 resetar_form()
-    #                 st.rerun()
-    #             else:
-    #                 st.error("Por favor, preencha os dois campos.")

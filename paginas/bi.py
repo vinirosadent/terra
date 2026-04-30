@@ -91,7 +91,7 @@ def render():
             canc_cli = len(df_alunos[df_alunos['Periodo_Canc'] == periodo_sel])
         else:
             cli_ativos = len(df_alunos[df_alunos['ativo'] == 1])
-            novos_cli = len(df_alunos[df_alunos['data_cadastro'].notnull()])
+            novos_cli = len(df_alunos[(df_alunos['data_cadastro'].notnull()) & (df_alunos['ativo'] == 1)])
             canc_cli = len(df_alunos[df_alunos['data_cancelamento'].notnull()])
 
         cresc_liq = novos_cli - canc_cli

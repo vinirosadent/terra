@@ -100,9 +100,24 @@ def render():
                 if aluno_sel != "Pessoa Externa / Avulso":
                     aluno_data = df_alunos[df_alunos['nome'] == aluno_sel].iloc[0]
                     aluno_id_val = int(aluno_data['id'])
-                    pago_ate_atual = pd.to_datetime(aluno_data['pago_ate']) if pd.notnull(aluno_data['pago_ate']) else pd.to_datetime(f"{date.today().year}-{date.today().month:02d}-20")
-                    if pago_ate_atual < pd.to_datetime(f"{date.today().year}-{date.today().month:02d}-20"): pago_ate_atual = pd.to_datetime(f"{date.today().year}-{date.today().month:02d}-20")
-                    novo_pago_ate = pago_ate_atual + pd.DateOffset(months=qtd_meses)
+
+                    # Logica E.3: cobertura por mes-calendario.
+                    # Cada mensalidade cobre o mes inteiro (do dia 1 ao ultimo dia).
+                    # Sistema sempre quita do mais antigo em aberto pra frente.
+                    #
+                    # Regra:
+                    # - Se pago_ate preenchido: base = mes do pago_ate atual
+                    # - Se pago_ate null: base = mes anterior ao corrente
+                    #   (assim o proximo mes a pagar vira o mes corrente)
+                    # - Avanca qtd_meses a partir da base
+                    # - Ancora no ultimo dia desse mes final
+                    hoje = pd.Timestamp(date.today())
+                    if pd.notnull(aluno_data['pago_ate']):
+                        base = pd.to_datetime(aluno_data['pago_ate']).replace(day=1)
+                    else:
+                        base = (hoje.replace(day=1) - pd.DateOffset(days=1)).normalize().replace(day=1)
+
+                    novo_pago_ate = (base + pd.DateOffset(months=qtd_meses)) + pd.offsets.MonthEnd(0)
                     atualizar_dados('alunos', {'pago_ate': novo_pago_ate.strftime('%Y-%m-%d')}, 'id', aluno_id_val)
 
                 imp_str = ", ".join(impostos_sel)

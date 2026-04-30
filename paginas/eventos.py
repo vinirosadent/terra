@@ -304,6 +304,8 @@ def render():
             st.warning("🔒 **Aviso:** Verifique os gastos e entradas. Adicione qualquer item pendente ou esquecido, e depois encerre o evento.")
 
             df_orc_close = buscar_dados('orcamento_eventos', eq={'evento_id': ev_id_close})
+            if df_orc_close.empty:
+                df_orc_close = pd.DataFrame(columns=['tipo', 'descricao', 'valor'])
             df_lanc_close = buscar_dados('lancamentos', eq={'evento_id': ev_id_close})
 
             st.markdown("### Comparativo (Orçado vs Realizado até o momento)")
@@ -312,7 +314,7 @@ def render():
 
             tot_imposto = df_lanc_close[df_lanc_close['tipo'] == 'Entrada']['valor_imposto'].sum() if not df_lanc_close.empty else 0.0
 
-            df_lanc_saida = df_lanc_close[df_lanc_close['tipo'] == 'Saida'].copy()
+            df_lanc_saida = df_lanc_close[df_lanc_close['tipo'] == 'Saida'].copy() if not df_lanc_close.empty else pd.DataFrame(columns=['tipo', 'descricao', 'valor_liquido'])
             if not df_lanc_saida.empty:
                 df_lanc_saida['Item'] = df_lanc_saida['descricao'].apply(lambda x: extrair_item_evento(x, ev_sel_close))
             else:
@@ -415,6 +417,8 @@ def render():
             margem_real = (lucro_real / ent_real * 100) if ent_real > 0 else 0.0
 
             df_orc_ev_d = buscar_dados('orcamento_eventos', eq={'evento_id': ev_id_soa})
+            if df_orc_ev_d.empty:
+                df_orc_ev_d = pd.DataFrame(columns=['tipo', 'descricao', 'valor'])
             ent_proj = df_orc_ev_d[df_orc_ev_d['tipo'] == 'Receita']['valor'].sum() if not df_orc_ev_d.empty else 0.0
             sai_proj = df_orc_ev_d[df_orc_ev_d['tipo'] == 'Despesa']['valor'].sum() if not df_orc_ev_d.empty else 0.0
             lucro_proj = ent_proj - sai_proj
@@ -438,7 +442,7 @@ def render():
             st.markdown("### Detalhamento Financeiro (Orçado vs Realizado)")
             linhas_soa = []
 
-            df_lanc_saida = df_lanc_ev[df_lanc_ev['tipo'] == 'Saida'].copy()
+            df_lanc_saida = df_lanc_ev[df_lanc_ev['tipo'] == 'Saida'].copy() if not df_lanc_ev.empty else pd.DataFrame(columns=['tipo', 'descricao', 'valor_liquido'])
             if not df_lanc_saida.empty:
                 df_lanc_saida['Item'] = df_lanc_saida['descricao'].apply(lambda x: extrair_item_evento(x, ev_sel_soa))
             else:

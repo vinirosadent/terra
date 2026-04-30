@@ -57,7 +57,11 @@ def render():
 
         if st.button("Confirmar Cadastro do Cliente", type="primary"):
             if nome and planos_aluno:
-                venc = f"{date.today().year}-{date.today().month:02d}-20"
+                # E.4/E.3: pago_ate ancorado no ultimo dia do mes anterior ao corrente.
+                # Assim o cliente entra "devendo" o mes corrente, que sera quitado
+                # no primeiro pagamento.
+                hoje_ts = pd.Timestamp(date.today())
+                venc = (hoje_ts.replace(day=1) - pd.DateOffset(days=1)).strftime('%Y-%m-%d')
                 hoje = date.today().strftime('%Y-%m-%d')
 
                 inserir_dados('alunos', {
@@ -71,7 +75,7 @@ def render():
                 st.error("Preencha Nome e selecione os Serviços para prosseguir.")
 
     elif aba_clientes == "📋 Lista de Clientes":
-        df_alunos = buscar_dados('alunos', select='id, nome, planos, valor_total, ativo, data_cadastro, data_cancelamento, data_ultima_ativacao')
+        df_alunos = buscar_dados('alunos', select='id, nome, planos, valor_total, ativo, data_cadastro, data_cancelamento, data_ultima_ativacao, pago_ate')
         if not df_alunos.empty:
             def format_p(p):
                 try: return " + ".join([f"{x['modalidade']}" for x in json.loads(p)])
@@ -93,7 +97,28 @@ def render():
 
             df_v['Status Atual'] = df_v.apply(format_status, axis=1)
 
-            st.dataframe(df_v[['nome', 'Serviços Contratados', 'valor_total', 'Status Atual']].rename(columns={'nome':'Nome do Cliente', 'valor_total':'Cota Mensal (R$)'}), use_container_width=True)
+            # E.4: coluna "Pago até" com indicador visual de status
+            hoje_dt = pd.Timestamp(date.today())
+
+            def format_pago_ate(x):
+                pa = x.get('pago_ate')
+                if pa is None or (isinstance(pa, str) and pa.strip() == '') or pd.isna(pa):
+                    return "—"
+                try:
+                    pa_dt = pd.to_datetime(pa)
+                    pa_fmt = pa_dt.strftime('%d/%m/%Y')
+                    if pa_dt >= hoje_dt:
+                        return f"🟢 {pa_fmt}"
+                    else:
+                        return f"🔴 {pa_fmt}"
+                except:
+                    return str(pa)
+
+            df_v['Pago até'] = df_v.apply(format_pago_ate, axis=1)
+
+            st.caption("**Legenda:** 🟢 Mensalidade regular (em dia)   🔴 Mensalidade atrasada")
+
+            st.dataframe(df_v[['nome', 'Serviços Contratados', 'valor_total', 'Status Atual', 'Pago até']].rename(columns={'nome':'Nome do Cliente', 'valor_total':'Cota Mensal (R$)'}), use_container_width=True)
 
     elif aba_clientes == "✏️ Editar Contrato":
         df_ativos = buscar_dados('alunos', eq={'ativo': 1}, order='nome')

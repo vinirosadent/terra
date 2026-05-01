@@ -14,10 +14,12 @@ Estrutura de abas:
         4b. Ambientes          - CRUD de ambientes (F.2)
 """
 
+from datetime import date, timedelta
+
 import pandas as pd
 import streamlit as st
 
-from db import buscar_dados, inserir_dados, atualizar_dados
+from db import buscar_dados, inserir_dados, atualizar_dados, deletar_dados
 
 
 # Paleta fixa de cores para profissionais.
@@ -88,13 +90,52 @@ def _render_aba_analise():
 
 
 def _render_aba_funcionamento():
-    """Aba 3 - Horario de Funcionamento (placeholder ate F.3)."""
-    st.info(
-        "Cadastro de Horario de Funcionamento em construcao (Etapa F.3).\n\n"
-        "Aqui sera possivel cadastrar, editar e remover os blocos de horario "
-        "em que a academia esta aberta para cada dia da semana "
-        "(ex: segunda 06h-09h e 17h-22h)."
+    """Aba 3 - Cadastro de Horario de Funcionamento (F.3)."""
+    st.markdown("### Horario de Funcionamento da Academia")
+    st.caption(
+        "Cadastre os blocos de horario em que a academia esta aberta para cada "
+        "dia da semana. E possivel cadastrar mais de um bloco por dia "
+        "(ex: segunda 06h-09h E 17h-22h). Mudancas sao registradas com "
+        "historico para analise de rentabilidade por epoca."
     )
+
+    df_func = buscar_dados("horario_funcionamento", order="dia_semana")
+    if df_func.empty:
+        df_func = pd.DataFrame(columns=[
+            "id", "dia_semana", "hora_inicio", "hora_fim",
+            "ativo", "created_at", "vigente_desde", "vigente_ate"
+        ])
+
+    # Filtrar apenas blocos vigentes hoje
+    hoje = date.today()
+    df_vigentes = _filtrar_vigentes_hoje(df_func, hoje)
+
+    # KPI: total de horas semanais de funcionamento
+    if not df_vigentes.empty:
+        total_horas = _calcular_total_horas_semanais(df_vigentes)
+        st.metric("Total de horas semanais de funcionamento", f"{total_horas:.1f} h")
+
+    st.markdown("---")
+
+    # Renderizar dia a dia (segunda = 0, ..., domingo = 6)
+    for dia_idx, dia_nome in enumerate(DIAS_SEMANA):
+        with st.container():
+            st.markdown(f"#### {dia_nome}")
+
+            # Blocos vigentes deste dia
+            df_dia = df_vigentes[df_vigentes["dia_semana"] == dia_idx].sort_values("hora_inicio")
+
+            if df_dia.empty:
+                st.caption("Sem blocos cadastrados — academia fechada.")
+            else:
+                for _, bloco in df_dia.iterrows():
+                    _render_linha_bloco(bloco, df_func)
+
+            # Form pra adicionar bloco neste dia
+            with st.expander(f"+ adicionar bloco em {dia_nome.lower()}"):
+                _render_form_adicionar_bloco(dia_idx, dia_nome, df_func)
+
+            st.markdown("")  # espacamento
 
 
 def _render_aba_configuracoes():
@@ -459,6 +500,238 @@ def _validar_ambiente(nome, df_existente, ambiente_id_editando=None):
         if nome_limpo.lower() in nomes_existentes:
             return f"Ja existe um ambiente com o nome '{nome_limpo}'."
     return None
+
+
+# ============================================================================
+# Helpers da aba Horario de Funcionamento (F.3)
+# ============================================================================
+
+# Convencao de dia_semana: 0=segunda, 1=terca, ..., 6=domingo
+# Padrao Python datetime.weekday()
+DIAS_SEMANA = [
+    "Segunda-feira",
+    "Terca-feira",
+    "Quarta-feira",
+    "Quinta-feira",
+    "Sexta-feira",
+    "Sabado",
+    "Domingo",
+]
+
+
+def _filtrar_vigentes_hoje(df, hoje):
+    """Retorna apenas blocos vigentes hoje.
+
+    Vigente hoje = vigente_desde <= hoje E (vigente_ate IS NULL OR vigente_ate >= hoje).
+
+    Usa pd.Timestamp para comparacao porque lida bem com NaT na coluna
+    vigente_ate (quando o bloco ainda esta em vigencia, vigente_ate e NULL
+    no banco, NaT no DataFrame).
+    """
+    if df.empty:
+        return df
+    df_copy = df.copy()
+    hoje_ts = pd.Timestamp(hoje)
+    df_copy["_vigente_desde_ts"] = pd.to_datetime(df_copy["vigente_desde"], errors="coerce")
+    df_copy["_vigente_ate_ts"] = pd.to_datetime(df_copy["vigente_ate"], errors="coerce")
+    cond_desde = df_copy["_vigente_desde_ts"] <= hoje_ts
+    cond_ate = df_copy["_vigente_ate_ts"].isna() | (df_copy["_vigente_ate_ts"] >= hoje_ts)
+    return df_copy[cond_desde & cond_ate].drop(columns=["_vigente_desde_ts", "_vigente_ate_ts"])
+
+
+def _calcular_total_horas_semanais(df_vigentes):
+    """Soma total de horas vigentes de funcionamento na semana."""
+    total_segundos = 0
+    for _, bloco in df_vigentes.iterrows():
+        ini = pd.to_datetime(str(bloco["hora_inicio"]))
+        fim = pd.to_datetime(str(bloco["hora_fim"]))
+        total_segundos += (fim - ini).total_seconds()
+    return total_segundos / 3600.0
+
+
+def _validar_sobreposicao(dia_semana, hora_inicio, hora_fim, df_vigentes, bloco_id_excluir=None):
+    """Verifica sobreposicao com blocos vigentes do mesmo dia da semana.
+
+    Retorna mensagem de erro ou None se OK. bloco_id_excluir e passado
+    quando estamos editando um bloco existente, para nao comparar com
+    ele mesmo.
+    """
+    if df_vigentes.empty:
+        return None
+    df_dia = df_vigentes[df_vigentes["dia_semana"] == dia_semana]
+    if bloco_id_excluir is not None:
+        df_dia = df_dia[df_dia["id"] != bloco_id_excluir]
+    if df_dia.empty:
+        return None
+    novo_ini = pd.to_datetime(str(hora_inicio)).time()
+    novo_fim = pd.to_datetime(str(hora_fim)).time()
+    for _, existente in df_dia.iterrows():
+        existente_ini = pd.to_datetime(str(existente["hora_inicio"])).time()
+        existente_fim = pd.to_datetime(str(existente["hora_fim"])).time()
+        # Sobreposicao: novo.inicio < existente.fim AND novo.fim > existente.inicio
+        if novo_ini < existente_fim and novo_fim > existente_ini:
+            return (
+                f"Sobreposicao com bloco existente: "
+                f"{existente_ini.strftime('%H:%M')} - {existente_fim.strftime('%H:%M')}. "
+                f"Edite ou remova o bloco existente antes de cadastrar este."
+            )
+    return None
+
+
+def _render_linha_bloco(bloco, df_func_completo):
+    """Renderiza uma linha visual de um bloco vigente com botoes editar e remover."""
+    bloco_id = int(bloco["id"])
+    hora_ini_str = str(bloco["hora_inicio"])[:5]  # HH:MM
+    hora_fim_str = str(bloco["hora_fim"])[:5]
+
+    col_info, col_edit, col_del = st.columns([5, 1, 1])
+    with col_info:
+        st.markdown(f"• **{hora_ini_str}** - **{hora_fim_str}**")
+    with col_edit:
+        if st.button("✏️", key=f"btn_edit_{bloco_id}", help="Editar bloco", use_container_width=True):
+            st.session_state[f"editando_bloco_{bloco_id}"] = True
+            st.rerun()
+    with col_del:
+        if st.button("🗑️", key=f"btn_del_{bloco_id}", help="Remover bloco", use_container_width=True):
+            _remover_bloco(bloco_id, bloco)
+            st.rerun()
+
+    # Form de edicao (aparece apenas quando o usuario clicou em editar)
+    if st.session_state.get(f"editando_bloco_{bloco_id}", False):
+        with st.form(f"form_edit_bloco_{bloco_id}"):
+            st.markdown("**Editar bloco**")
+            col_h1, col_h2 = st.columns(2)
+            with col_h1:
+                nova_ini = st.time_input(
+                    "Hora inicio",
+                    value=pd.to_datetime(str(bloco["hora_inicio"])).time(),
+                    step=1800,  # 30 minutos
+                )
+            with col_h2:
+                nova_fim = st.time_input(
+                    "Hora fim",
+                    value=pd.to_datetime(str(bloco["hora_fim"])).time(),
+                    step=1800,
+                )
+            col_btn1, col_btn2 = st.columns(2)
+            with col_btn1:
+                btn_salvar = st.form_submit_button("Salvar", type="primary", use_container_width=True)
+            with col_btn2:
+                btn_cancelar = st.form_submit_button("Cancelar", use_container_width=True)
+
+            if btn_salvar:
+                if nova_fim <= nova_ini:
+                    st.error("Hora fim deve ser maior que hora inicio.")
+                else:
+                    df_vigentes = _filtrar_vigentes_hoje(df_func_completo, date.today())
+                    erro = _validar_sobreposicao(
+                        int(bloco["dia_semana"]), nova_ini, nova_fim,
+                        df_vigentes, bloco_id_excluir=bloco_id
+                    )
+                    if erro:
+                        st.error(erro)
+                    else:
+                        try:
+                            _editar_bloco(bloco_id, bloco, nova_ini, nova_fim)
+                            del st.session_state[f"editando_bloco_{bloco_id}"]
+                            st.success("Bloco editado com sucesso.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao editar: {e}")
+
+            if btn_cancelar:
+                del st.session_state[f"editando_bloco_{bloco_id}"]
+                st.rerun()
+
+
+def _render_form_adicionar_bloco(dia_idx, dia_nome, df_func):
+    """Form pra adicionar novo bloco em um dia especifico."""
+    with st.form(f"form_add_bloco_{dia_idx}", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            nova_ini = st.time_input(
+                "Hora inicio",
+                value=pd.to_datetime("05:00").time(),
+                step=1800,  # 30 minutos
+                key=f"add_ini_{dia_idx}",
+            )
+        with col2:
+            nova_fim = st.time_input(
+                "Hora fim",
+                value=pd.to_datetime("23:30").time(),
+                step=1800,
+                key=f"add_fim_{dia_idx}",
+            )
+        submitted = st.form_submit_button(
+            f"Adicionar bloco em {dia_nome.lower()}",
+            type="primary",
+            use_container_width=True,
+        )
+
+        if submitted:
+            if nova_fim <= nova_ini:
+                st.error("Hora fim deve ser maior que hora inicio.")
+            else:
+                df_vigentes = _filtrar_vigentes_hoje(df_func, date.today())
+                erro = _validar_sobreposicao(dia_idx, nova_ini, nova_fim, df_vigentes)
+                if erro:
+                    st.error(erro)
+                else:
+                    try:
+                        inserir_dados("horario_funcionamento", {
+                            "dia_semana": int(dia_idx),
+                            "hora_inicio": nova_ini.strftime("%H:%M:%S"),
+                            "hora_fim": nova_fim.strftime("%H:%M:%S"),
+                            "ativo": True,
+                            "vigente_desde": date.today().isoformat(),
+                        })
+                        st.success(f"Bloco {nova_ini.strftime('%H:%M')}-{nova_fim.strftime('%H:%M')} adicionado em {dia_nome.lower()}.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao adicionar: {e}")
+
+
+def _editar_bloco(bloco_id, bloco_atual, nova_ini, nova_fim):
+    """Edita um bloco. Logica: se cadastrado hoje, UPDATE in-place;
+    senao, encerra vigencia do antigo e cria novo."""
+    hoje = date.today()
+    vigente_desde = pd.to_datetime(str(bloco_atual["vigente_desde"])).date()
+
+    if vigente_desde == hoje:
+        # Cadastrado hoje, sem historico real -> UPDATE in-place
+        atualizar_dados("horario_funcionamento", {
+            "hora_inicio": nova_ini.strftime("%H:%M:%S"),
+            "hora_fim": nova_fim.strftime("%H:%M:%S"),
+        }, "id", bloco_id)
+    else:
+        # Tem historico -> encerra antigo + cria novo
+        ontem = hoje - timedelta(days=1)
+        atualizar_dados("horario_funcionamento", {
+            "vigente_ate": ontem.isoformat(),
+        }, "id", bloco_id)
+        inserir_dados("horario_funcionamento", {
+            "dia_semana": int(bloco_atual["dia_semana"]),
+            "hora_inicio": nova_ini.strftime("%H:%M:%S"),
+            "hora_fim": nova_fim.strftime("%H:%M:%S"),
+            "ativo": True,
+            "vigente_desde": hoje.isoformat(),
+        })
+
+
+def _remover_bloco(bloco_id, bloco_atual):
+    """Remove um bloco. Logica: se cadastrado hoje, DELETE fisico;
+    senao, soft delete (vigente_ate = hoje)."""
+    hoje = date.today()
+    vigente_desde = pd.to_datetime(str(bloco_atual["vigente_desde"])).date()
+
+    if vigente_desde == hoje:
+        # Cadastrado hoje, sem historico real -> DELETE fisico
+        deletar_dados("horario_funcionamento", "id", bloco_id)
+    else:
+        # Tem historico -> soft delete
+        atualizar_dados("horario_funcionamento", {
+            "vigente_ate": hoje.isoformat(),
+        }, "id", bloco_id)
 
 
 def _render_sub_ambientes():

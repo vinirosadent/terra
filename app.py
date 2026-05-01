@@ -9,6 +9,7 @@ from paginas import orcamento as pg_orcamento
 from paginas import operacoes as pg_operacoes
 from paginas import recebiveis as pg_recebiveis
 from paginas import bi as pg_bi
+from paginas import calendario as pg_calendario
 
 # --- CONFIGURAÇÃO DA PÁGINA E ESTILIZAÇÃO ---
 st.set_page_config(page_title="App da Terra | Gestão", page_icon="🌿", layout="wide")
@@ -50,12 +51,13 @@ else:
             
         st.markdown("---")
         menu = st.radio("Módulos", [
-            "📈 Inteligência (BI)", 
-            "💰 Recebíveis", 
-            "💸 Operações (Caixa)", 
-            "📅 Gestão de Eventos",
-            "🎯 Orçamento & Metas",
+            "📈 Inteligência (BI)",
+            "💰 Recebíveis",
+            "💸 Operações (Caixa)",
             "👤 Gestão de Clientes",
+            "📅 Calendário",
+            "🎯 Orçamento & Metas",
+            "🎉 Gestão de Eventos",
             "⚙️ Configurações",
             "📜 Log de Lançamentos"
         ])
@@ -85,31 +87,37 @@ else:
         pg_operacoes.render()
 
     # ==========================================
-    # 4. GESTÃO DE EVENTOS
-    # ==========================================
-    elif menu == "📅 Gestão de Eventos":
-        pg_eventos.render()
-
-    # ==========================================
-    # 5. ORÇAMENTO & METAS
-    # ==========================================
-    elif menu == "🎯 Orçamento & Metas":
-        pg_orcamento.render()
-
-    # ==========================================
-    # 6. GESTÃO DE CLIENTES
+    # 4. GESTÃO DE CLIENTES
     # ==========================================
     elif menu == "👤 Gestão de Clientes":
         pg_clientes.render()
 
     # ==========================================
-    # 7. CONFIGURAÇÕES BASE DO SISTEMA
+    # 5. CALENDÁRIO (USO DA ACADEMIA)
+    # ==========================================
+    elif menu == "📅 Calendário":
+        pg_calendario.render()
+
+    # ==========================================
+    # 6. ORÇAMENTO & METAS
+    # ==========================================
+    elif menu == "🎯 Orçamento & Metas":
+        pg_orcamento.render()
+
+    # ==========================================
+    # 7. GESTÃO DE EVENTOS
+    # ==========================================
+    elif menu == "🎉 Gestão de Eventos":
+        pg_eventos.render()
+
+    # ==========================================
+    # 8. CONFIGURAÇÕES BASE DO SISTEMA
     # ==========================================
     elif menu == "⚙️ Configurações":
         pg_configuracoes.render()
 
     # ==========================================
-    # 8. LOG DE LANÇAMENTOS (O "DIÁRIO")
+    # 9. LOG DE LANÇAMENTOS (O "DIÁRIO")
     # ==========================================
     elif menu == "📜 Log de Lançamentos":
         pg_log.render()

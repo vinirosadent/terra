@@ -14,10 +14,13 @@ Estrutura de abas:
         4b. Ambientes          - CRUD de ambientes (F.2)
 """
 
+import calendar as _calendar_lib
+import datetime as dt
 from datetime import date, timedelta
 
 import pandas as pd
 import streamlit as st
+from streamlit_calendar import calendar
 
 from db import buscar_dados, inserir_dados, atualizar_dados, deletar_dados
 
@@ -71,13 +74,57 @@ def render():
 
 
 def _render_aba_calendario():
-    """Aba 1 - Calendario (placeholder ate F.4)."""
-    st.info(
-        "Calendario em construcao (Etapa F.4).\n\n"
-        "Quando estiver pronto, aqui sera possivel registrar as atividades "
-        "(aulas, treinos) diretamente no calendario, alem de visualizar o "
-        "uso da academia em formato mensal ou semanal."
-    )
+    """Aba 1 - Calendario read-only (F.4).
+
+    Renderiza um calendario por ambiente rentavel ativo, lado a lado,
+    com eventos gerados a partir das regras vigentes em agenda_regras.
+    Read-only: criar/editar regras via drag-drop fica para F.5.
+    """
+    st.markdown("### 📅 Calendario de Uso")
+
+    # Controles superiores
+    col_mes, col_visao = st.columns([2, 1])
+
+    with col_mes:
+        hoje = dt.date.today()
+        mes_referencia = st.date_input(
+            "Mes de referencia",
+            value=hoje.replace(day=1),
+            format="DD/MM/YYYY",
+            key="f4_mes_ref",
+        )
+        ano = mes_referencia.year
+        mes = mes_referencia.month
+
+    with col_visao:
+        visao = st.radio(
+            "Visao",
+            options=["Mensal", "Semanal"],
+            horizontal=True,
+            key="f4_visao",
+        )
+
+    st.markdown("---")
+
+    # Busca regras vigentes e gera eventos
+    df_regras = _buscar_regras_vigentes_mes(ano, mes)
+    eventos_por_ambiente = _gerar_eventos_do_mes(ano, mes, df_regras)
+
+    # Busca ambientes rentaveis ativos
+    df_ambientes = buscar_dados("ambientes", eq={"ativo": True, "rentavel": True})
+
+    if df_ambientes.empty:
+        st.warning("Nenhum ambiente rentavel ativo cadastrado. Cadastre em Configuracoes > Ambientes.")
+    elif df_regras.empty:
+        st.info(
+            "Sem regras de agenda cadastradas. O calendario interativo "
+            "(criar/editar regras via drag-drop) sera implementado em uma "
+            "proxima etapa (F.5)."
+        )
+        # Renderiza calendarios vazios mesmo assim, pra ja mostrar o layout
+        _renderizar_calendarios_lado_a_lado(df_ambientes, {}, ano, mes, visao)
+    else:
+        _renderizar_calendarios_lado_a_lado(df_ambientes, eventos_por_ambiente, ano, mes, visao)
 
 
 def _render_aba_analise():
@@ -890,3 +937,214 @@ def _render_sub_ambientes():
                     st.rerun()
                 except Exception as e:
                     st.error(f"Erro ao alterar status: {e}")
+
+
+# ============================================================================
+# Helpers da aba Calendario (F.4)
+# ============================================================================
+
+
+def _buscar_regras_vigentes_mes(ano, mes):
+    """Busca regras de agenda_regras vigentes em qualquer dia do mes informado.
+
+    Uma regra e vigente no mes se:
+    - ativo = TRUE
+    - data_inicio <= ultimo_dia_do_mes
+    - data_fim IS NULL OR data_fim >= primeiro_dia_do_mes
+
+    Retorna DataFrame com colunas: id, profissional_id, ambiente_id,
+    dia_semana, hora_inicio, hora_fim, data_inicio, data_fim, ativo,
+    profissional_nome, profissional_cor, ambiente_nome.
+    """
+    # Calcula primeiro e ultimo dia do mes
+    primeiro_dia = dt.date(ano, mes, 1)
+    ultimo_dia_num = _calendar_lib.monthrange(ano, mes)[1]
+    ultimo_dia = dt.date(ano, mes, ultimo_dia_num)
+
+    # Busca todas as regras ativas
+    df_regras = buscar_dados("agenda_regras", eq={"ativo": True})
+
+    if df_regras.empty:
+        return pd.DataFrame(columns=[
+            "id", "profissional_id", "ambiente_id", "dia_semana",
+            "hora_inicio", "hora_fim", "data_inicio", "data_fim", "ativo",
+            "profissional_nome", "profissional_cor", "ambiente_nome",
+        ])
+
+    # Filtra por vigencia que intersecta o mes
+    df_regras["data_inicio_dt"] = pd.to_datetime(df_regras["data_inicio"], errors="coerce")
+    df_regras["data_fim_dt"] = pd.to_datetime(df_regras["data_fim"], errors="coerce")
+
+    primeiro_ts = pd.Timestamp(primeiro_dia)
+    ultimo_ts = pd.Timestamp(ultimo_dia)
+
+    mask_inicio = df_regras["data_inicio_dt"] <= ultimo_ts
+    mask_fim = df_regras["data_fim_dt"].isna() | (df_regras["data_fim_dt"] >= primeiro_ts)
+    df_regras = df_regras[mask_inicio & mask_fim].copy()
+
+    if df_regras.empty:
+        return pd.DataFrame(columns=[
+            "id", "profissional_id", "ambiente_id", "dia_semana",
+            "hora_inicio", "hora_fim", "data_inicio", "data_fim", "ativo",
+            "profissional_nome", "profissional_cor", "ambiente_nome",
+        ])
+
+    # Enriquece com dados de profissionais e ambientes
+    df_prof = buscar_dados("profissionais")
+    df_amb = buscar_dados("ambientes")
+
+    if not df_prof.empty:
+        df_regras = df_regras.merge(
+            df_prof[["id", "nome", "cor_hex"]].rename(
+                columns={"id": "profissional_id", "nome": "profissional_nome", "cor_hex": "profissional_cor"}
+            ),
+            on="profissional_id",
+            how="left",
+        )
+    else:
+        df_regras["profissional_nome"] = "?"
+        df_regras["profissional_cor"] = "#888888"
+
+    if not df_amb.empty:
+        df_regras = df_regras.merge(
+            df_amb[["id", "nome"]].rename(
+                columns={"id": "ambiente_id", "nome": "ambiente_nome"}
+            ),
+            on="ambiente_id",
+            how="left",
+        )
+    else:
+        df_regras["ambiente_nome"] = "?"
+
+    df_regras = df_regras.drop(columns=["data_inicio_dt", "data_fim_dt"], errors="ignore")
+    return df_regras
+
+
+def _gerar_eventos_do_mes(ano, mes, df_regras):
+    """Expande regras recorrentes em ocorrencias reais do mes.
+
+    Para cada regra, percorre os dias do mes e gera um evento sempre que:
+    - dia.weekday() bate com regra.dia_semana (formato Python: 0=segunda ... 6=domingo)
+    - regra.data_inicio <= dia <= regra.data_fim (ou data_fim e None)
+
+    Retorna dict {ambiente_id: [lista de eventos no formato FullCalendar]}.
+    """
+    eventos_por_ambiente = {}
+
+    if df_regras.empty:
+        return eventos_por_ambiente
+
+    ultimo_dia_num = _calendar_lib.monthrange(ano, mes)[1]
+
+    for _, regra in df_regras.iterrows():
+        # Parsea datas de inicio/fim da regra
+        data_inicio_regra = regra.get("data_inicio")
+        data_fim_regra = regra.get("data_fim")
+
+        if isinstance(data_inicio_regra, str):
+            data_inicio_regra = dt.date.fromisoformat(data_inicio_regra)
+        if data_fim_regra is not None and isinstance(data_fim_regra, str):
+            data_fim_regra = dt.date.fromisoformat(data_fim_regra)
+
+        dia_semana_regra = int(regra["dia_semana"])
+        hora_inicio = str(regra["hora_inicio"])
+        hora_fim = str(regra["hora_fim"])
+
+        # Normaliza hora pra "HH:MM"
+        if len(hora_inicio) > 5:
+            hora_inicio = hora_inicio[:5]
+        if len(hora_fim) > 5:
+            hora_fim = hora_fim[:5]
+
+        # Loop pelos dias do mes
+        for dia_num in range(1, ultimo_dia_num + 1):
+            dia = dt.date(ano, mes, dia_num)
+
+            # Filtro por dia_semana (Python convention: 0=segunda)
+            if dia.weekday() != dia_semana_regra:
+                continue
+
+            # Filtro por vigencia da regra
+            if data_inicio_regra and dia < data_inicio_regra:
+                continue
+            if data_fim_regra and dia > data_fim_regra:
+                continue
+
+            evento = {
+                "title": regra.get("profissional_nome", "?"),
+                "start": f"{dia.isoformat()}T{hora_inicio}:00",
+                "end": f"{dia.isoformat()}T{hora_fim}:00",
+                "backgroundColor": regra.get("profissional_cor", "#888888"),
+                "borderColor": regra.get("profissional_cor", "#888888"),
+                "textColor": "#ffffff",
+            }
+
+            ambiente_id = regra["ambiente_id"]
+            if ambiente_id not in eventos_por_ambiente:
+                eventos_por_ambiente[ambiente_id] = []
+            eventos_por_ambiente[ambiente_id].append(evento)
+
+    return eventos_por_ambiente
+
+
+def _renderizar_calendarios_lado_a_lado(df_ambientes, eventos_por_ambiente, ano, mes, visao):
+    """Renderiza um calendario por ambiente rentavel, lado a lado em colunas.
+
+    Se houver 2 ambientes: 2 colunas iguais.
+    Se houver 1 ambiente: ocupa toda a largura.
+    Se houver 3+ ambientes: empilha em linhas de 2.
+    """
+    ambientes_lista = df_ambientes.to_dict("records")
+
+    if visao == "Mensal":
+        initial_view = "dayGridMonth"
+    else:
+        initial_view = "timeGridWeek"
+
+    initial_date = dt.date(ano, mes, 1).isoformat()
+
+    options_base = {
+        "headerToolbar": {
+            "left": "prev,next today",
+            "center": "title",
+            "right": "",
+        },
+        "initialView": initial_view,
+        "initialDate": initial_date,
+        "firstDay": 0,
+        "fixedWeekCount": True,
+        "showNonCurrentDates": True,
+        "editable": False,
+        "selectable": False,
+        "locale": "pt-br",
+        "buttonText": {"today": "Hoje"},
+        "slotMinTime": "05:00:00",
+        "slotMaxTime": "23:30:00",
+        "allDaySlot": False,
+        "height": 650,
+    }
+
+    # Renderiza em pares (2 por linha)
+    for i in range(0, len(ambientes_lista), 2):
+        par = ambientes_lista[i:i + 2]
+
+        if len(par) == 2:
+            cols = st.columns(2)
+        else:
+            cols = [st.container()]
+
+        for col, ambiente in zip(cols, par):
+            with col:
+                area_str = f" ({ambiente.get('area_m2', '?')} m²)" if ambiente.get("area_m2") else ""
+                st.markdown(f"#### 🏢 {ambiente['nome']}{area_str}")
+
+                eventos = eventos_por_ambiente.get(ambiente["id"], [])
+
+                # Key unica por ambiente + mes + visao pra evitar colisao de state
+                cal_key = f"cal_{ambiente['id']}_{ano}_{mes}_{visao}"
+
+                calendar(
+                    events=eventos,
+                    options=options_base,
+                    key=cal_key,
+                )

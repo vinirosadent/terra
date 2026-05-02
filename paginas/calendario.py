@@ -17,12 +17,17 @@ Estrutura de abas:
 import calendar as _calendar_lib
 import datetime as dt
 from datetime import date, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
 from streamlit_calendar import calendar
 
 from db import buscar_dados, inserir_dados, atualizar_dados, deletar_dados
+
+
+# Fuso horario fixo da academia (Sao Paulo, Brasil)
+_TZ_ACADEMIA = ZoneInfo("America/Sao_Paulo")
 
 
 # Paleta fixa de cores para profissionais.
@@ -82,8 +87,16 @@ def _render_aba_calendario():
     """
     st.markdown("### 📅 Calendario de Uso")
 
-    # Controles superiores
-    col_mes, col_visao = st.columns([2, 1])
+    # Mensagem de sucesso de operacao previa (sobrevive ao rerun do dialog)
+    if "f5_msg_sucesso" in st.session_state:
+        st.success(st.session_state.pop("f5_msg_sucesso"))
+
+    # Controles superiores: mes + visao + ambiente
+    # Ambiente: selectbox que persiste em session_state pra escolher qual
+    # calendario renderizar (so 1 por vez agora, em vez de 2 lado-a-lado)
+    df_ambientes_topo = buscar_dados("ambientes", eq={"ativo": True, "rentavel": True})
+
+    col_mes, col_visao, col_amb = st.columns([2, 1, 2])
 
     with col_mes:
         hoje = dt.date.today()
@@ -104,27 +117,79 @@ def _render_aba_calendario():
             key="f4_visao",
         )
 
+    with col_amb:
+        if df_ambientes_topo.empty:
+            ambiente_selecionado_id = None
+            st.caption("⚠️ Nenhum ambiente rentavel ativo")
+        else:
+            ambientes_dict = {}
+            for _, row in df_ambientes_topo.iterrows():
+                area_str = f" ({row.get('area_m2', '?')} m²)" if row.get("area_m2") else ""
+                label = f"🏢 {row['nome']}{area_str}"
+                ambientes_dict[label] = int(row["id"])
+
+            opcoes_labels = list(ambientes_dict.keys())
+            ambiente_label = st.selectbox(
+                "Ambiente",
+                options=opcoes_labels,
+                key="f5_ambiente_selecionado",
+            )
+            ambiente_selecionado_id = ambientes_dict[ambiente_label]
+
     st.markdown("---")
 
     # Busca regras vigentes e gera eventos
     df_regras = _buscar_regras_vigentes_mes(ano, mes)
     eventos_por_ambiente = _gerar_eventos_do_mes(ano, mes, df_regras)
 
-    # Busca ambientes rentaveis ativos
-    df_ambientes = buscar_dados("ambientes", eq={"ativo": True, "rentavel": True})
-
-    if df_ambientes.empty:
+    # Renderizacao single-ambient com caixa lateral (60/40)
+    if ambiente_selecionado_id is None:
         st.warning("Nenhum ambiente rentavel ativo cadastrado. Cadastre em Configuracoes > Ambientes.")
-    elif df_regras.empty:
-        st.info(
-            "Sem regras de agenda cadastradas. O calendario interativo "
-            "(criar/editar regras via drag-drop) sera implementado em uma "
-            "proxima etapa (F.5)."
-        )
-        # Renderiza calendarios vazios mesmo assim, pra ja mostrar o layout
-        _renderizar_calendarios_lado_a_lado(df_ambientes, {}, ano, mes, visao)
     else:
-        _renderizar_calendarios_lado_a_lado(df_ambientes, eventos_por_ambiente, ano, mes, visao)
+        col_calendario, col_caixa = st.columns([6, 4])
+
+        with col_calendario:
+            ambiente_atual = df_ambientes_topo[
+                df_ambientes_topo["id"] == ambiente_selecionado_id
+            ].iloc[0].to_dict()
+            eventos_do_ambiente = eventos_por_ambiente.get(ambiente_selecionado_id, [])
+            _renderizar_calendario_unico(
+                ambiente=ambiente_atual,
+                eventos=eventos_do_ambiente,
+                ano=ano,
+                mes=mes,
+                visao=visao,
+            )
+
+            if df_regras.empty:
+                st.caption(
+                    "Sem regras cadastradas ainda. Arraste no calendario semanal "
+                    "pra cadastrar a primeira."
+                )
+
+        with col_caixa:
+            _renderizar_caixa_acao()
+
+    # ============================================================
+    # SECAO TEMPORARIA · Cadastro de historico de regras
+    # Sera removida apos populacao inicial (estimativa: 1-2 meses)
+    # ============================================================
+    st.markdown("---")
+    with st.expander("📅 Cadastrar historico (uso temporario)", expanded=st.session_state.get("f5_hist_aberto", False)):
+        st.caption(
+            "Use esse formulario apenas para cadastrar regras que comecaram "
+            "antes de hoje (inicializacao do sistema). Para regras novas, "
+            "use o drag-drop direto no calendario semanal acima."
+        )
+        if not st.session_state.get("f5_hist_aberto", False):
+            if st.button("➕ Adicionar regra historica", key="f5_btn_historico", type="secondary"):
+                st.session_state["f5_hist_aberto"] = True
+                st.rerun()
+        else:
+            _renderizar_form_regra_historica()
+    # ============================================================
+    # FIM SECAO TEMPORARIA
+    # ============================================================
 
 
 def _render_aba_analise():
@@ -1041,9 +1106,16 @@ def _gerar_eventos_do_mes(ano, mes, df_regras):
         data_inicio_regra = regra.get("data_inicio")
         data_fim_regra = regra.get("data_fim")
 
-        if isinstance(data_inicio_regra, str):
+        # data_inicio: vem como str ou date do banco
+        if pd.isna(data_inicio_regra):
+            data_inicio_regra = None
+        elif isinstance(data_inicio_regra, str):
             data_inicio_regra = dt.date.fromisoformat(data_inicio_regra)
-        if data_fim_regra is not None and isinstance(data_fim_regra, str):
+
+        # data_fim: pode vir None, NaN (NULL no banco), str ou date
+        if pd.isna(data_fim_regra):
+            data_fim_regra = None
+        elif isinstance(data_fim_regra, str):
             data_fim_regra = dt.date.fromisoformat(data_fim_regra)
 
         dia_semana_regra = int(regra["dia_semana"])
@@ -1070,13 +1142,23 @@ def _gerar_eventos_do_mes(ano, mes, df_regras):
             if data_fim_regra and dia > data_fim_regra:
                 continue
 
+            # title vazio: bloco mostra so a cor (legenda no topo identifica
+            # o profissional). extendedProps guarda dados pra usar no menu
+            # de bloco (Tarefa 5).
             evento = {
-                "title": regra.get("profissional_nome", "?"),
+                "id": str(regra["id"]),
+                "title": " ",
                 "start": f"{dia.isoformat()}T{hora_inicio}:00",
                 "end": f"{dia.isoformat()}T{hora_fim}:00",
                 "backgroundColor": regra.get("profissional_cor", "#888888"),
                 "borderColor": regra.get("profissional_cor", "#888888"),
                 "textColor": "#ffffff",
+                "extendedProps": {
+                    "profissional_nome": regra.get("profissional_nome", "?"),
+                    "ambiente_nome": regra.get("ambiente_nome", "?"),
+                    "hora_inicio": hora_inicio,
+                    "hora_fim": hora_fim,
+                },
             }
 
             ambiente_id = regra["ambiente_id"]
@@ -1103,21 +1185,30 @@ def _renderizar_calendarios_lado_a_lado(df_ambientes, eventos_por_ambiente, ano,
 
     initial_date = dt.date(ano, mes, 1).isoformat()
 
+    # Configuracoes interativas variam por visao
+    is_semanal = (visao == "Semanal")
+
     options_base = {
         "headerToolbar": {
             "left": "prev,next today",
             "center": "title",
-            "right": "",
+            "right": ""
         },
         "initialView": initial_view,
         "initialDate": initial_date,
         "firstDay": 0,
         "fixedWeekCount": True,
         "showNonCurrentDates": True,
-        "editable": False,
-        "selectable": False,
+        "editable": is_semanal,
+        "eventStartEditable": is_semanal,
+        "eventDurationEditable": is_semanal,
+        "selectable": is_semanal,
+        "selectMirror": is_semanal,
         "locale": "pt-br",
-        "buttonText": {"today": "Hoje"},
+        "timeZone": "America/Sao_Paulo",
+        "buttonText": {
+            "today": "Hoje"
+        },
         "slotMinTime": "05:00:00",
         "slotMaxTime": "23:30:00",
         "allDaySlot": False,
@@ -1143,8 +1234,1010 @@ def _renderizar_calendarios_lado_a_lado(df_ambientes, eventos_por_ambiente, ano,
                 # Key unica por ambiente + mes + visao pra evitar colisao de state
                 cal_key = f"cal_{ambiente['id']}_{ano}_{mes}_{visao}"
 
-                calendar(
+                # Captura interacao do usuario (drag, click, etc)
+                cal_state = calendar(
                     events=eventos,
                     options=options_base,
                     key=cal_key,
                 )
+
+                # Processa interacao se houve
+                if is_semanal and cal_state:
+                    _processar_interacao_calendario(cal_state, ambiente["id"], cal_key)
+
+
+def _renderizar_calendario_unico(ambiente, eventos, ano, mes, visao):
+    """Renderiza UM calendario (single-ambient).
+
+    Usado no layout 60/40 onde so um ambiente e mostrado por vez,
+    com a caixa de acao na coluna lateral. Substituiu o layout
+    antigo de 2 calendarios lado a lado (`_renderizar_calendarios_lado_a_lado`).
+    """
+    if visao == "Mensal":
+        initial_view = "dayGridMonth"
+    else:
+        initial_view = "timeGridWeek"
+
+    initial_date = dt.date(ano, mes, 1).isoformat()
+    is_semanal = (visao == "Semanal")
+
+    options = {
+        "headerToolbar": {
+            "left": "prev,next today",
+            "center": "title",
+            "right": ""
+        },
+        "initialView": initial_view,
+        "initialDate": initial_date,
+        "firstDay": 0,
+        "fixedWeekCount": True,
+        "showNonCurrentDates": True,
+        "editable": is_semanal,
+        "eventStartEditable": is_semanal,
+        "eventDurationEditable": is_semanal,
+        "selectable": is_semanal,
+        "selectMirror": is_semanal,
+        "locale": "pt-br",
+        "timeZone": "America/Sao_Paulo",
+        "buttonText": {
+            "today": "Hoje"
+        },
+        "slotMinTime": "05:00:00",
+        "slotMaxTime": "23:30:00",
+        "allDaySlot": False,
+        "height": 750,
+    }
+
+    area_str = f" ({ambiente.get('area_m2', '?')} m²)" if ambiente.get("area_m2") else ""
+    st.markdown(f"#### 🏢 {ambiente['nome']}{area_str}")
+
+    # Legenda de cores (substitui texto dentro dos blocos)
+    _renderizar_legenda_profissionais()
+
+    cal_key = f"cal_unico_{ambiente['id']}_{ano}_{mes}_{visao}"
+
+    cal_state = calendar(
+        events=eventos,
+        options=options,
+        key=cal_key,
+    )
+
+    if is_semanal and cal_state:
+        _processar_interacao_calendario(cal_state, ambiente["id"], cal_key)
+    elif not is_semanal and cal_state:
+        # Mensal so processa eventClick (encerrar), nao select (criar)
+        _processar_interacao_calendario(cal_state, ambiente["id"], cal_key)
+
+
+def _renderizar_legenda_profissionais():
+    """Legenda horizontal de profissionais ativos com suas cores.
+
+    Substitui o texto que estava dentro dos blocos do calendario.
+    Le profissionais ativos ordenados por nome.
+    """
+    df_prof = buscar_dados("profissionais", eq={"ativo": True}, order="nome")
+
+    if df_prof.empty:
+        return
+
+    itens_html = []
+    for _, row in df_prof.iterrows():
+        cor = row.get("cor_hex", "#888888")
+        nome = row["nome"]
+        item = (
+            f'<span style="display:inline-flex;align-items:center;'
+            f'margin-right:18px;font-size:14px;">'
+            f'<span style="display:inline-block;width:14px;height:14px;'
+            f'border-radius:50%;background-color:{cor};border:1px solid #ccc;'
+            f'margin-right:6px;"></span>'
+            f'<span>{nome}</span>'
+            f'</span>'
+        )
+        itens_html.append(item)
+
+    legenda_html = (
+        '<div style="padding:8px 12px;background-color:#f8f9fa;'
+        'border:1px solid #dee2e6;border-radius:6px;margin-bottom:8px;">'
+        + "".join(itens_html) +
+        '</div>'
+    )
+
+    st.markdown(legenda_html, unsafe_allow_html=True)
+
+
+def _processar_interacao_calendario(cal_state, ambiente_id, cal_key):
+    """Despacha cal_state pra session_state (em vez de abrir modal).
+
+    streamlit-calendar retorna dict com chaves 'select' (drag pra criar)
+    ou 'eventClick' (clique em evento existente). Em vez de abrir um
+    @st.dialog (que sofre com loop de rerun), gravamos a intencao em
+    session_state e a caixa de acao inline (renderizada abaixo dos
+    calendarios) detecta e mostra o form.
+
+    Importante: comparamos com a ultima interacao processada pra evitar
+    re-disparar a mesma acao apos um rerun (cal_state persiste).
+    """
+    if not cal_state:
+        return
+
+    # Detecta arrastar pra criar (so visao semanal)
+    if "select" in cal_state and cal_state["select"]:
+        sel = cal_state["select"]
+        if not sel.get("allDay"):
+            assinatura = f"select|{ambiente_id}|{sel.get('start')}|{sel.get('end')}"
+            ultima = st.session_state.get("f5_ultima_interacao_processada")
+            if assinatura != ultima:
+                st.session_state["f5_acao_pendente"] = {
+                    "tipo": "criar",
+                    "origem": "drag",
+                    "ambiente_id": ambiente_id,
+                    "start_iso": sel["start"],
+                    "end_iso": sel["end"],
+                    "cal_key": cal_key,
+                }
+                st.session_state["f5_ultima_interacao_processada"] = assinatura
+                st.rerun()
+            return
+
+    # Detecta clique em evento existente -> abre MENU do bloco
+    # (em vez de ir direto pra encerrar — agora menu pergunta o que fazer)
+    if "eventClick" in cal_state and cal_state["eventClick"]:
+        evt = cal_state["eventClick"].get("event", {})
+        regra_id = evt.get("id")
+        data_clicada_iso = evt.get("start")
+
+        if regra_id and data_clicada_iso:
+            assinatura = f"eventClick|{regra_id}|{data_clicada_iso}"
+            ultima = st.session_state.get("f5_ultima_interacao_processada")
+            if assinatura != ultima:
+                try:
+                    regra_id_int = int(regra_id)
+                    st.session_state["f5_acao_pendente"] = {
+                        "tipo": "menu_bloco",
+                        "regra_id": regra_id_int,
+                        "data_clicada_iso": data_clicada_iso,
+                        "ambiente_id": ambiente_id,
+                    }
+                    st.session_state["f5_ultima_interacao_processada"] = assinatura
+                    st.rerun()
+                except (ValueError, TypeError):
+                    pass
+        return
+
+
+def _inserir_regra(
+    profissional_id,
+    ambiente_id,
+    dia_semana,
+    hora_inicio,
+    hora_fim,
+    data_inicio=None,
+    data_fim=None,
+):
+    """INSERT em agenda_regras.
+
+    data_inicio: date object. Se None, usa hoje (default uso continuo).
+    data_fim: date object ou None. Default None (regra recorrente sem fim).
+              Usado quando regra ja foi encerrada no passado (cadastro historico).
+
+    Retorna True se nao houve excecao.
+    """
+    if data_inicio is None:
+        data_inicio = dt.date.today()
+
+    dados = {
+        "profissional_id": profissional_id,
+        "ambiente_id": ambiente_id,
+        "dia_semana": int(dia_semana),
+        "hora_inicio": hora_inicio,
+        "hora_fim": hora_fim,
+        "data_inicio": data_inicio.isoformat(),
+        "data_fim": data_fim.isoformat() if data_fim else None,
+        "ativo": True,
+    }
+
+    try:
+        inserir_dados("agenda_regras", dados)
+        return True
+    except Exception as e:
+        st.error(f"Erro ao cadastrar regra: {type(e).__name__} — {e}")
+        return False
+
+
+def _encerrar_regra(regra_id, data_encerrar, data_inicio_regra):
+    """Encerra uma regra existente.
+
+    Logica:
+    - Se data_encerrar == data_inicio_regra (regra criada hoje, sem historico):
+      DELETE fisico (limpa banco)
+    - Caso contrario: UPDATE setando data_fim = data_encerrar - 1 dia
+
+    Retorna True se nao houve excecao.
+    """
+    try:
+        if data_encerrar == data_inicio_regra:
+            # Regra cadastrada hoje sem historico — DELETE fisico
+            deletar_dados("agenda_regras", "id", regra_id)
+        else:
+            # Encerra com data_fim = vespera
+            data_fim_iso = (data_encerrar - dt.timedelta(days=1)).isoformat()
+            atualizar_dados(
+                "agenda_regras",
+                {"data_fim": data_fim_iso},
+                "id",
+                regra_id,
+            )
+        return True
+    except Exception as e:
+        st.error(f"Erro ao encerrar regra: {type(e).__name__} — {e}")
+        return False
+
+
+def _renderizar_caixa_acao():
+    """Caixa de acao lateral (coluna direita do layout 60/40).
+
+    Le `f5_acao_pendente` em session_state e renderiza:
+    - tipo='menu_bloco': menu com 3 opcoes (encerrar / cadastrar nova / cancelar)
+    - tipo='criar': form de cadastro
+    - tipo='encerrar': form de encerramento
+    - sem chave: dica de uso
+    """
+    acao = st.session_state.get("f5_acao_pendente")
+
+    if not acao:
+        with st.container(border=True):
+            st.markdown("##### 💡 Como usar")
+            st.markdown(
+                "**Pra cadastrar uma nova regra:** mude pra visao "
+                "**Semanal** e arraste o mouse no horario desejado."
+            )
+            st.markdown(
+                "**Pra encerrar ou cadastrar atividade sobre uma regra existente:** "
+                "clique uma vez no bloco — um menu aparecera aqui."
+            )
+            st.caption(
+                "Use o expander **'Cadastrar historico'** abaixo do "
+                "calendario pra cadastrar regras antigas (que comecaram "
+                "antes de hoje)."
+            )
+            st.warning(
+                "⚠️ **Arrastar um bloco existente** pra mover ou redimensionar "
+                "ainda nao salva a alteracao — em desenvolvimento. Pra "
+                "mudar uma regra, encerre a antiga e cadastre uma nova."
+            )
+        return
+
+    tipo = acao.get("tipo")
+    if tipo == "menu_bloco":
+        _renderizar_menu_bloco(acao)
+    elif tipo == "criar":
+        _renderizar_form_criar_regra(acao)
+    elif tipo == "encerrar":
+        _renderizar_form_encerrar_regra(acao)
+    elif tipo == "editar":
+        _renderizar_form_editar_regra(acao)
+
+
+def _renderizar_menu_bloco(acao):
+    """Menu que aparece ao clicar em um bloco existente.
+
+    Mostra resumo do bloco + 3 botoes:
+    - Encerrar regra
+    - Cadastrar nova atividade neste horario
+    - Cancelar
+    """
+    regra_id = acao["regra_id"]
+    data_clicada_iso = acao["data_clicada_iso"]
+    ambiente_id = acao["ambiente_id"]
+
+    df_regra = buscar_dados("agenda_regras", eq={"id": regra_id})
+
+    st.markdown("##### 🎯 O que fazer com este bloco?")
+
+    with st.container(border=True):
+        if df_regra.empty:
+            st.error("Regra nao encontrada.")
+            if st.button("Fechar", key=f"f5_menu_close_notfound_{regra_id}"):
+                st.session_state.pop("f5_acao_pendente", None)
+                st.rerun()
+            return
+
+        regra = df_regra.iloc[0]
+
+        df_prof = buscar_dados("profissionais", eq={"id": int(regra["profissional_id"])})
+        profissional_nome = df_prof.iloc[0]["nome"] if not df_prof.empty else "?"
+
+        hora_ini_str = str(regra["hora_inicio"])[:5]
+        hora_fim_str = str(regra["hora_fim"])[:5]
+
+        # Resumo do bloco
+        st.markdown(
+            f"**{profissional_nome}**, {hora_ini_str} - {hora_fim_str}"
+        )
+
+        st.markdown("---")
+
+        # Opcao 1: encerrar
+        if st.button(
+            "⏹️ Encerrar regra",
+            key=f"f5_menu_encerrar_{regra_id}",
+            use_container_width=True,
+        ):
+            st.session_state["f5_acao_pendente"] = {
+                "tipo": "encerrar",
+                "regra_id": regra_id,
+                "data_clicada_iso": data_clicada_iso,
+            }
+            st.rerun()
+
+        # Opcao 2: cadastrar nova atividade neste horario
+        if st.button(
+            "➕ Cadastrar nova atividade neste horario",
+            key=f"f5_menu_criar_sobre_{regra_id}",
+            use_container_width=True,
+        ):
+            # Calcula a data ISO completa pra start e end (data clicada + horario do bloco)
+            data_clicada_dt = dt.datetime.fromisoformat(
+                data_clicada_iso.rstrip("Z").split(".")[0]
+            )
+            data_iso_str = data_clicada_dt.date().isoformat()
+
+            start_iso = f"{data_iso_str}T{hora_ini_str}:00"
+            end_iso = f"{data_iso_str}T{hora_fim_str}:00"
+
+            cal_key = f"cal_unico_{ambiente_id}"
+
+            st.session_state["f5_acao_pendente"] = {
+                "tipo": "criar",
+                "origem": "menu",
+                "ambiente_id": ambiente_id,
+                "start_iso": start_iso,
+                "end_iso": end_iso,
+                "cal_key": cal_key,
+            }
+            st.rerun()
+
+        # Opcao 3: editar atividade
+        if st.button(
+            "✏️ Editar esta atividade",
+            key=f"f5_menu_editar_{regra_id}",
+            use_container_width=True,
+        ):
+            st.session_state["f5_acao_pendente"] = {
+                "tipo": "editar",
+                "regra_id": regra_id,
+                "data_clicada_iso": data_clicada_iso,
+            }
+            st.rerun()
+
+        # Opcao 4: cancelar
+        if st.button(
+            "✖️ Cancelar",
+            key=f"f5_menu_cancel_{regra_id}",
+            use_container_width=True,
+        ):
+            st.session_state.pop("f5_acao_pendente", None)
+            st.rerun()
+
+
+def _renderizar_form_criar_regra(acao):
+    """Form inline de criacao de regra (substitui o antigo dialog).
+
+    Renderizado dentro de container destacado abaixo dos calendarios
+    quando `f5_acao_pendente` tem tipo='criar'.
+    """
+    ambiente_id = acao["ambiente_id"]
+    start_iso = acao["start_iso"]
+    end_iso = acao["end_iso"]
+    cal_key = acao["cal_key"]
+
+    # Parse das datas/horas do drag
+    # streamlit-calendar com timeZone='America/Sao_Paulo' retorna ISO com sufixo
+    # 'Z' enganador, mas o horario JA esta em fuso local SP. Ignoramos o 'Z' e
+    # parseamos como naive — sem nenhuma conversao de fuso.
+    start_dt = dt.datetime.fromisoformat(start_iso.rstrip("Z").split(".")[0])
+    end_dt = dt.datetime.fromisoformat(end_iso.rstrip("Z").split(".")[0])
+
+    dia_semana = start_dt.weekday()
+    hora_inicio = start_dt.strftime("%H:%M")
+    hora_fim = end_dt.strftime("%H:%M")
+
+    nomes_dias = ["Segunda", "Terca", "Quarta", "Quinta", "Sexta", "Sabado", "Domingo"]
+    dia_nome = nomes_dias[dia_semana]
+
+    df_amb = buscar_dados("ambientes", eq={"id": ambiente_id})
+    ambiente_nome = df_amb.iloc[0]["nome"] if not df_amb.empty else "?"
+
+    df_prof = buscar_dados("profissionais", eq={"ativo": True})
+
+    st.markdown("##### ➕ Cadastrar nova regra")
+
+    with st.container(border=True):
+        if df_prof.empty:
+            st.warning("Nenhum profissional ativo cadastrado. Cadastre em Configuracoes > Professores antes.")
+            if st.button("Fechar", key=f"f5_form_criar_close_{cal_key}"):
+                st.session_state.pop("f5_acao_pendente", None)
+                st.rerun()
+            return
+
+        st.markdown(f"**Ambiente:** {ambiente_nome}")
+        st.markdown(f"**Dia da semana:** {dia_nome} (toda {dia_nome.lower()})")
+
+        # Hora: editavel quando origem=menu (cadastro sobreposto), fixa quando origem=drag
+        origem = acao.get("origem", "drag")
+
+        if origem == "menu":
+            # Editavel: usuario pode ajustar dentro do bloco existente
+            st.caption(
+                f"Bloco original: {hora_inicio} - {hora_fim}. "
+                f"Ajuste os campos abaixo pra criar atividade dentro desse intervalo."
+            )
+            col_hi, col_hf = st.columns(2)
+            with col_hi:
+                hora_inicio_t = st.time_input(
+                    "Hora inicio",
+                    value=dt.datetime.strptime(hora_inicio, "%H:%M").time(),
+                    step=dt.timedelta(minutes=30),
+                    key=f"f5_form_criar_hi_{cal_key}",
+                )
+            with col_hf:
+                hora_fim_t = st.time_input(
+                    "Hora fim",
+                    value=dt.datetime.strptime(hora_fim, "%H:%M").time(),
+                    step=dt.timedelta(minutes=30),
+                    key=f"f5_form_criar_hf_{cal_key}",
+                )
+            # Sobrescreve hora_inicio e hora_fim com valores ajustados
+            hora_inicio = hora_inicio_t.strftime("%H:%M")
+            hora_fim = hora_fim_t.strftime("%H:%M")
+        else:
+            # Fixa: usuario arrastou exatamente o intervalo que queria
+            st.markdown(f"**Horario:** {hora_inicio} - {hora_fim}")
+
+        # Validacao de horario
+        erro_hora = None
+        if hora_fim <= hora_inicio:
+            erro_hora = "Hora fim deve ser maior que hora inicio."
+            st.error(erro_hora)
+
+        # Aviso de vigencia
+        hoje = dt.date.today()
+        hoje_str = hoje.strftime("%d/%m/%Y")
+        hoje_dia_semana = hoje.weekday()
+        dias_ate_proximo = (dia_semana - hoje_dia_semana) % 7
+        primeira_ocorrencia = hoje + dt.timedelta(days=dias_ate_proximo)
+        primeira_ocorrencia_str = primeira_ocorrencia.strftime("%d/%m/%Y")
+
+        if dia_semana == hoje_dia_semana:
+            msg_ocorrencia = f"A primeira ocorrencia sera **hoje ({primeira_ocorrencia_str})**."
+        else:
+            msg_ocorrencia = (
+                f"A primeira ocorrencia sera **{primeira_ocorrencia_str}** "
+                f"(proxima {dia_nome.lower()})."
+            )
+
+        st.info(
+            f"📅 Esta regra valera **a partir de hoje ({hoje_str})**, recorrente "
+            f"toda {dia_nome.lower()}. {msg_ocorrencia}"
+        )
+
+        if origem == "drag":
+            st.warning(
+                "💡 **Quer cadastrar uma regra que comecou ANTES de hoje?** "
+                "Cancele esta caixa e use **'Cadastrar historico (uso temporario)'** "
+                "abaixo do calendario."
+            )
+
+        st.markdown("---")
+
+        profissionais_dict = {row["nome"]: row["id"] for _, row in df_prof.iterrows()}
+        profissional_nome = st.selectbox(
+            "Profissional",
+            options=list(profissionais_dict.keys()),
+            key=f"f5_form_criar_prof_{cal_key}",
+        )
+        profissional_id = profissionais_dict[profissional_nome]
+
+        st.markdown("---")
+        col_cancel, col_ok = st.columns([1, 1])
+
+        with col_cancel:
+            if st.button("Cancelar", key=f"f5_form_criar_cancel_{cal_key}", use_container_width=True):
+                st.session_state.pop("f5_acao_pendente", None)
+                st.rerun()
+
+        with col_ok:
+            if st.button(
+                "✅ Cadastrar",
+                key=f"f5_form_criar_ok_{cal_key}",
+                type="primary",
+                use_container_width=True,
+                disabled=(erro_hora is not None),
+            ):
+                with st.spinner("Cadastrando..."):
+                    sucesso = _inserir_regra(
+                        profissional_id=profissional_id,
+                        ambiente_id=ambiente_id,
+                        dia_semana=dia_semana,
+                        hora_inicio=hora_inicio,
+                        hora_fim=hora_fim,
+                    )
+                if sucesso:
+                    st.session_state["f5_msg_sucesso"] = "Regra cadastrada!"
+                    st.session_state.pop("f5_acao_pendente", None)
+                    st.rerun()
+
+
+def _renderizar_form_encerrar_regra(acao):
+    """Form inline de encerramento de regra (substitui o antigo dialog).
+
+    Renderizado dentro de container destacado abaixo dos calendarios
+    quando `f5_acao_pendente` tem tipo='encerrar'.
+    """
+    regra_id = acao["regra_id"]
+    data_clicada_iso = acao["data_clicada_iso"]
+
+    df_regra = buscar_dados("agenda_regras", eq={"id": regra_id})
+
+    st.markdown("##### ⏹️ Encerrar regra")
+
+    with st.container(border=True):
+        if df_regra.empty:
+            st.error("Regra nao encontrada (pode ter sido removida em outra aba).")
+            if st.button("Fechar", key=f"f5_form_enc_close_{regra_id}"):
+                st.session_state.pop("f5_acao_pendente", None)
+                st.rerun()
+            return
+
+        regra = df_regra.iloc[0]
+
+        df_prof = buscar_dados("profissionais", eq={"id": int(regra["profissional_id"])})
+        df_amb = buscar_dados("ambientes", eq={"id": int(regra["ambiente_id"])})
+
+        profissional_nome = df_prof.iloc[0]["nome"] if not df_prof.empty else "?"
+        ambiente_nome = df_amb.iloc[0]["nome"] if not df_amb.empty else "?"
+
+        nomes_dias = ["Segunda", "Terca", "Quarta", "Quinta", "Sexta", "Sabado", "Domingo"]
+        dia_nome = nomes_dias[int(regra["dia_semana"])]
+
+        hora_ini_str = str(regra["hora_inicio"])[:5]
+        hora_fim_str = str(regra["hora_fim"])[:5]
+
+        if isinstance(regra["data_inicio"], str):
+            data_inicio_obj = dt.date.fromisoformat(regra["data_inicio"])
+        else:
+            data_inicio_obj = regra["data_inicio"]
+
+        st.markdown(f"**Profissional:** {profissional_nome}")
+        st.markdown(f"**Ambiente:** {ambiente_nome}")
+        st.markdown(f"**Dia:** Toda {dia_nome.lower()}, {hora_ini_str} - {hora_fim_str}")
+        st.markdown(f"**Vigente desde:** {data_inicio_obj.strftime('%d/%m/%Y')}")
+
+        st.markdown("---")
+        st.markdown("**A partir de qual data esta regra deixa de valer?**")
+
+        data_clicada = dt.datetime.fromisoformat(
+            data_clicada_iso.rstrip("Z").split(".")[0]
+        ).date()
+
+        data_encerrar = st.date_input(
+            "Encerrar a partir de",
+            value=data_clicada,
+            format="DD/MM/YYYY",
+            key=f"f5_form_enc_data_{regra_id}",
+            help="A regra continuara aparecendo no calendario ate a vespera dessa data.",
+        )
+
+        erro = None
+        if data_encerrar < data_inicio_obj:
+            erro = (
+                f"Data de encerramento ({data_encerrar.strftime('%d/%m/%Y')}) nao pode ser "
+                f"anterior a data de inicio ({data_inicio_obj.strftime('%d/%m/%Y')})."
+            )
+
+        if erro:
+            st.error(erro)
+        else:
+            vespera = data_encerrar - dt.timedelta(days=1)
+            st.info(
+                f"ℹ️ A regra continuara aparecendo no calendario ate **{vespera.strftime('%d/%m/%Y')}** "
+                f"e desaparece a partir de {data_encerrar.strftime('%d/%m/%Y')}."
+            )
+
+        st.markdown("---")
+        col_cancel, col_ok = st.columns([1, 1])
+
+        with col_cancel:
+            if st.button("Cancelar", key=f"f5_form_enc_cancel_{regra_id}", use_container_width=True):
+                st.session_state.pop("f5_acao_pendente", None)
+                st.rerun()
+
+        with col_ok:
+            if st.button(
+                "⏹️ Encerrar regra",
+                key=f"f5_form_enc_ok_{regra_id}",
+                type="primary",
+                use_container_width=True,
+                disabled=(erro is not None),
+            ):
+                with st.spinner("Encerrando regra..."):
+                    sucesso = _encerrar_regra(
+                        regra_id=regra_id,
+                        data_encerrar=data_encerrar,
+                        data_inicio_regra=data_inicio_obj,
+                    )
+                if sucesso:
+                    vespera = data_encerrar - dt.timedelta(days=1)
+                    if data_encerrar <= dt.date.today() and data_inicio_obj == data_encerrar:
+                        msg = "Regra removida (cadastrada hoje, sem historico)."
+                    else:
+                        msg = f"Regra encerrada (vigente ate {vespera.strftime('%d/%m/%Y')})"
+                    st.session_state["f5_msg_sucesso"] = msg
+                    st.session_state.pop("f5_acao_pendente", None)
+                    st.rerun()
+
+
+def _renderizar_form_editar_regra(acao):
+    """Form inline de edicao de regra existente.
+
+    Permite mudar dia_semana e horario. Profissional/ambiente nao editaveis.
+
+    Logica de aplicacao da edicao (preserva historico):
+    - data_aplicar > data_inicio_original: encerra antiga + cria nova
+    - data_aplicar == data_inicio_original: UPDATE direto (sem historico pra preservar)
+    - data_aplicar < data_inicio_original: erro, bloqueia
+    """
+    regra_id = acao["regra_id"]
+    data_clicada_iso = acao["data_clicada_iso"]
+
+    df_regra = buscar_dados("agenda_regras", eq={"id": regra_id})
+
+    st.markdown("##### ✏️ Editar atividade")
+
+    with st.container(border=True):
+        if df_regra.empty:
+            st.error("Regra nao encontrada (pode ter sido removida em outra aba).")
+            if st.button("Fechar", key=f"f5_form_edit_close_{regra_id}"):
+                st.session_state.pop("f5_acao_pendente", None)
+                st.rerun()
+            return
+
+        regra = df_regra.iloc[0]
+
+        df_prof = buscar_dados("profissionais", eq={"id": int(regra["profissional_id"])})
+        df_amb = buscar_dados("ambientes", eq={"id": int(regra["ambiente_id"])})
+
+        profissional_nome = df_prof.iloc[0]["nome"] if not df_prof.empty else "?"
+        ambiente_nome = df_amb.iloc[0]["nome"] if not df_amb.empty else "?"
+
+        nomes_dias = ["Segunda", "Terca", "Quarta", "Quinta", "Sexta", "Sabado", "Domingo"]
+        dia_atual = int(regra["dia_semana"])
+
+        hora_ini_atual_str = str(regra["hora_inicio"])[:5]
+        hora_fim_atual_str = str(regra["hora_fim"])[:5]
+
+        if isinstance(regra["data_inicio"], str):
+            data_inicio_obj = dt.date.fromisoformat(regra["data_inicio"])
+        else:
+            data_inicio_obj = regra["data_inicio"]
+
+        # Resumo (nao editavel)
+        st.markdown(f"**Profissional:** {profissional_nome}")
+        st.markdown(f"**Ambiente:** {ambiente_nome}")
+        st.caption(
+            f"Atual: {nomes_dias[dia_atual]}, {hora_ini_atual_str} - {hora_fim_atual_str}, "
+            f"vigente desde {data_inicio_obj.strftime('%d/%m/%Y')}"
+        )
+
+        st.markdown("---")
+        st.markdown("**Novos valores**")
+
+        # Dia da semana editavel
+        dia_novo_nome = st.selectbox(
+            "Dia da semana",
+            options=nomes_dias,
+            index=dia_atual,
+            key=f"f5_form_edit_dia_{regra_id}",
+        )
+        dia_novo = nomes_dias.index(dia_novo_nome)
+
+        # Horario editavel
+        col_hi, col_hf = st.columns(2)
+        with col_hi:
+            hora_inicio_t = st.time_input(
+                "Hora inicio",
+                value=dt.datetime.strptime(hora_ini_atual_str, "%H:%M").time(),
+                step=dt.timedelta(minutes=30),
+                key=f"f5_form_edit_hi_{regra_id}",
+            )
+        with col_hf:
+            hora_fim_t = st.time_input(
+                "Hora fim",
+                value=dt.datetime.strptime(hora_fim_atual_str, "%H:%M").time(),
+                step=dt.timedelta(minutes=30),
+                key=f"f5_form_edit_hf_{regra_id}",
+            )
+
+        st.markdown("---")
+        st.markdown("**A partir de qual data esta edicao se aplica?**")
+
+        data_clicada = dt.datetime.fromisoformat(
+            data_clicada_iso.rstrip("Z").split(".")[0]
+        ).date()
+
+        data_aplicar = st.date_input(
+            "Aplicar a partir de",
+            value=data_clicada,
+            format="DD/MM/YYYY",
+            key=f"f5_form_edit_data_{regra_id}",
+            help=(
+                "Use 'hoje' pra mudancas imediatas. "
+                "Use uma data futura pra agendar a mudanca pra mais tarde. "
+                "A regra original continua valida ate a vespera dessa data."
+            ),
+        )
+
+        # Validacoes
+        erro = None
+        if hora_fim_t <= hora_inicio_t:
+            erro = "Hora fim deve ser maior que hora inicio."
+        elif data_aplicar < data_inicio_obj:
+            erro = (
+                f"Data de aplicacao ({data_aplicar.strftime('%d/%m/%Y')}) nao pode "
+                f"ser anterior ao inicio da regra ({data_inicio_obj.strftime('%d/%m/%Y')})."
+            )
+
+        # Verifica se houve mudanca de fato
+        hora_inicio_nova_str = hora_inicio_t.strftime("%H:%M")
+        hora_fim_nova_str = hora_fim_t.strftime("%H:%M")
+        sem_mudanca = (
+            dia_novo == dia_atual
+            and hora_inicio_nova_str == hora_ini_atual_str
+            and hora_fim_nova_str == hora_fim_atual_str
+        )
+
+        if erro:
+            st.error(erro)
+        elif sem_mudanca:
+            st.info("ℹ️ Nenhuma alteracao detectada. Ajuste algum campo pra editar.")
+        else:
+            # Mostra preview do que vai acontecer
+            if data_aplicar == data_inicio_obj:
+                st.info(
+                    f"📅 Esta edicao **substituira** a regra atual completamente "
+                    f"(sem historico — a regra ja comecava em {data_inicio_obj.strftime('%d/%m/%Y')})."
+                )
+            else:
+                vespera = data_aplicar - dt.timedelta(days=1)
+                st.info(
+                    f"📅 A regra atual sera **encerrada em {vespera.strftime('%d/%m/%Y')}** "
+                    f"e uma nova regra com os novos valores comecara em "
+                    f"**{data_aplicar.strftime('%d/%m/%Y')}**."
+                )
+
+        st.markdown("---")
+        col_cancel, col_ok = st.columns([1, 1])
+
+        with col_cancel:
+            if st.button("Cancelar", key=f"f5_form_edit_cancel_{regra_id}", use_container_width=True):
+                st.session_state.pop("f5_acao_pendente", None)
+                st.rerun()
+
+        with col_ok:
+            if st.button(
+                "✏️ Confirmar edicao",
+                key=f"f5_form_edit_ok_{regra_id}",
+                type="primary",
+                use_container_width=True,
+                disabled=(erro is not None) or sem_mudanca,
+            ):
+                with st.spinner("Editando regra..."):
+                    sucesso = _editar_regra(
+                        regra_id=regra_id,
+                        regra_original=regra,
+                        dia_novo=dia_novo,
+                        hora_inicio_nova=hora_inicio_nova_str,
+                        hora_fim_nova=hora_fim_nova_str,
+                        data_aplicar=data_aplicar,
+                        data_inicio_original=data_inicio_obj,
+                    )
+                if sucesso:
+                    if data_aplicar == data_inicio_obj:
+                        msg = "Regra editada (substituicao direta)."
+                    else:
+                        msg = (
+                            f"Regra editada (antiga vigente ate "
+                            f"{(data_aplicar - dt.timedelta(days=1)).strftime('%d/%m/%Y')}, "
+                            f"nova a partir de {data_aplicar.strftime('%d/%m/%Y')})."
+                        )
+                    st.session_state["f5_msg_sucesso"] = msg
+                    st.session_state.pop("f5_acao_pendente", None)
+                    st.rerun()
+
+
+def _editar_regra(regra_id, regra_original, dia_novo, hora_inicio_nova, hora_fim_nova, data_aplicar, data_inicio_original):
+    """Aplica edicao de regra com 2 caminhos:
+
+    1. data_aplicar == data_inicio_original: UPDATE direto (sem historico)
+    2. data_aplicar > data_inicio_original: encerra antiga + cria nova
+
+    Retorna True se nao houve excecao.
+    """
+    try:
+        if data_aplicar == data_inicio_original:
+            # UPDATE direto na regra original
+            atualizar_dados(
+                "agenda_regras",
+                {
+                    "dia_semana": int(dia_novo),
+                    "hora_inicio": hora_inicio_nova,
+                    "hora_fim": hora_fim_nova,
+                },
+                "id",
+                regra_id,
+            )
+        else:
+            # Encerra antiga + cria nova
+            vespera_iso = (data_aplicar - dt.timedelta(days=1)).isoformat()
+            atualizar_dados(
+                "agenda_regras",
+                {"data_fim": vespera_iso},
+                "id",
+                regra_id,
+            )
+            inserir_dados(
+                "agenda_regras",
+                {
+                    "profissional_id": int(regra_original["profissional_id"]),
+                    "ambiente_id": int(regra_original["ambiente_id"]),
+                    "dia_semana": int(dia_novo),
+                    "hora_inicio": hora_inicio_nova,
+                    "hora_fim": hora_fim_nova,
+                    "data_inicio": data_aplicar.isoformat(),
+                    "data_fim": None,
+                    "ativo": True,
+                },
+            )
+        return True
+    except Exception as e:
+        st.error(f"Erro ao editar regra: {type(e).__name__} — {e}")
+        return False
+
+
+def _renderizar_form_regra_historica():
+    """Form inline de cadastro de regra historica (dentro do expander).
+
+    Renderizado quando `f5_hist_aberto` em session_state e True.
+    Mesmo conteudo do antigo @st.dialog, mas inline no expander.
+    """
+    df_prof = buscar_dados("profissionais", eq={"ativo": True})
+    df_amb = buscar_dados("ambientes", eq={"ativo": True})
+
+    if df_prof.empty:
+        st.warning("Nenhum profissional ativo cadastrado. Cadastre em Configuracoes > Professores antes.")
+        if st.button("Fechar", key="f5_hist_close_no_prof"):
+            st.session_state.pop("f5_hist_aberto", None)
+            st.rerun()
+        return
+
+    if df_amb.empty:
+        st.warning("Nenhum ambiente ativo cadastrado. Cadastre em Configuracoes > Ambientes antes.")
+        if st.button("Fechar", key="f5_hist_close_no_amb"):
+            st.session_state.pop("f5_hist_aberto", None)
+            st.rerun()
+        return
+
+    profissionais_dict = {row["nome"]: row["id"] for _, row in df_prof.iterrows()}
+    profissional_nome = st.selectbox(
+        "Profissional",
+        options=list(profissionais_dict.keys()),
+        key="f5_hist_prof",
+    )
+    profissional_id = profissionais_dict[profissional_nome]
+
+    ambientes_dict = {row["nome"]: row["id"] for _, row in df_amb.iterrows()}
+    ambiente_nome = st.selectbox(
+        "Ambiente",
+        options=list(ambientes_dict.keys()),
+        key="f5_hist_amb",
+    )
+    ambiente_id = ambientes_dict[ambiente_nome]
+
+    nomes_dias = ["Segunda", "Terca", "Quarta", "Quinta", "Sexta", "Sabado", "Domingo"]
+    dia_nome = st.selectbox(
+        "Dia da semana",
+        options=nomes_dias,
+        key="f5_hist_dia",
+    )
+    dia_semana = nomes_dias.index(dia_nome)
+
+    col_hi, col_hf = st.columns(2)
+    with col_hi:
+        hora_inicio_t = st.time_input(
+            "Hora inicio",
+            value=dt.time(18, 0),
+            step=dt.timedelta(minutes=30),
+            key="f5_hist_hi",
+        )
+    with col_hf:
+        hora_fim_t = st.time_input(
+            "Hora fim",
+            value=dt.time(19, 0),
+            step=dt.timedelta(minutes=30),
+            key="f5_hist_hf",
+        )
+
+    st.markdown("---")
+    st.markdown("**Periodo de vigencia**")
+
+    col_di, col_df = st.columns(2)
+    with col_di:
+        data_inicio = st.date_input(
+            "De",
+            value=dt.date.today() - dt.timedelta(days=120),
+            format="DD/MM/YYYY",
+            key="f5_hist_di",
+        )
+    with col_df:
+        data_fim = st.date_input(
+            "Ate",
+            value=dt.date.today(),
+            format="DD/MM/YYYY",
+            key="f5_hist_df",
+        )
+
+    em_andamento = st.checkbox(
+        "Aula ainda em andamento (sem data fim)",
+        value=False,
+        key="f5_hist_andamento",
+        help="Se marcado, a regra nao tem data fim — continua aparecendo no calendario indefinidamente.",
+    )
+
+    erro = None
+    if hora_fim_t <= hora_inicio_t:
+        erro = "Hora fim deve ser maior que hora inicio."
+    elif not em_andamento and data_fim < data_inicio:
+        erro = "Data 'Ate' deve ser maior ou igual a data 'De'."
+
+    if erro:
+        st.error(erro)
+
+    st.markdown("---")
+    col_cancel, col_ok = st.columns([1, 1])
+
+    with col_cancel:
+        if st.button("Cancelar", key="f5_hist_cancel", use_container_width=True):
+            st.session_state.pop("f5_hist_aberto", None)
+            st.rerun()
+
+    with col_ok:
+        if st.button(
+            "✅ Cadastrar regra historica",
+            key="f5_hist_ok",
+            type="primary",
+            use_container_width=True,
+            disabled=(erro is not None),
+        ):
+            data_fim_param = None if em_andamento else data_fim
+            with st.spinner("Cadastrando regra historica..."):
+                sucesso = _inserir_regra(
+                    profissional_id=profissional_id,
+                    ambiente_id=ambiente_id,
+                    dia_semana=dia_semana,
+                    hora_inicio=hora_inicio_t.strftime("%H:%M"),
+                    hora_fim=hora_fim_t.strftime("%H:%M"),
+                    data_inicio=data_inicio,
+                    data_fim=data_fim_param,
+                )
+            if sucesso:
+                if em_andamento:
+                    msg = f"Regra historica cadastrada (a partir de {data_inicio.strftime('%d/%m/%Y')}, em andamento)"
+                else:
+                    msg = (
+                        f"Regra historica cadastrada "
+                        f"({data_inicio.strftime('%d/%m/%Y')} a "
+                        f"{data_fim.strftime('%d/%m/%Y')})"
+                    )
+                st.session_state["f5_msg_sucesso"] = msg
+                st.session_state.pop("f5_hist_aberto", None)
+                st.rerun()

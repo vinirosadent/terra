@@ -1623,9 +1623,10 @@ def _renderizar_calendarios_lado_a_lado(df_ambientes, eventos_por_ambiente, ano,
         "firstDay": 0,
         "fixedWeekCount": True,
         "showNonCurrentDates": True,
-        "editable": is_semanal,
-        "eventStartEditable": is_semanal,
-        "eventDurationEditable": is_semanal,
+        # Drag de bloco existente desabilitado — alteracoes em regras so via menu do bloco (Encerrar / Editar / Cadastrar nova).
+        "editable": False,
+        "eventStartEditable": False,
+        "eventDurationEditable": False,
         "selectable": is_semanal,
         "selectMirror": is_semanal,
         "locale": "pt-br",
@@ -1696,9 +1697,10 @@ def _renderizar_calendario_unico(ambiente, eventos, ano, mes, visao):
         "firstDay": 0,
         "fixedWeekCount": True,
         "showNonCurrentDates": True,
-        "editable": is_semanal,
-        "eventStartEditable": is_semanal,
-        "eventDurationEditable": is_semanal,
+        # Drag de bloco existente desabilitado — alteracoes em regras so via menu do bloco (Encerrar / Editar / Cadastrar nova).
+        "editable": False,
+        "eventStartEditable": False,
+        "eventDurationEditable": False,
         "selectable": is_semanal,
         "selectMirror": is_semanal,
         "locale": "pt-br",
@@ -1923,11 +1925,6 @@ def _renderizar_caixa_acao():
                 "Use o expander **'Cadastrar historico'** abaixo do "
                 "calendario pra cadastrar regras antigas (que comecaram "
                 "antes de hoje)."
-            )
-            st.warning(
-                "⚠️ **Arrastar um bloco existente** pra mover ou redimensionar "
-                "ainda nao salva a alteracao — em desenvolvimento. Pra "
-                "mudar uma regra, encerre a antiga e cadastre uma nova."
             )
         return
 

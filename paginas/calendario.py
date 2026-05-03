@@ -25,6 +25,10 @@ from streamlit_calendar import calendar
 
 from db import buscar_dados, inserir_dados, atualizar_dados, deletar_dados
 
+import calendario_analise as ca
+import plotly.express as px
+import plotly.graph_objects as go
+
 
 # Fuso horario fixo da academia (Sao Paulo, Brasil)
 _TZ_ACADEMIA = ZoneInfo("America/Sao_Paulo")
@@ -193,11 +197,431 @@ def _render_aba_calendario():
 
 
 def _render_aba_analise():
-    """Aba 2 - Analise de Uso (placeholder ate F.7)."""
-    st.info(
-        "Analise de Uso em construcao (Etapa F.7).\n\n"
-        "Esta aba mostrara graficos de ocupacao por profissional, por ambiente, "
-        "heatmap de horarios mais cheios e KPIs de uso da academia."
+    """Aba 2 - Analise de Uso e Rentabilidade (F.7.3).
+
+    Le calculos puros de calendario_analise.py e renderiza:
+    - Controles de periodo (granularidade + datepicker)
+    - 4 KPIs principais com delta vs periodo anterior
+    - Tabela + bar chart de receita por ambiente rentavel
+    - Heatmap dia x hora de ocupacao
+    - Card de receita extra-espaco
+    - Aviso de receita nao classificada (se aplicavel)
+    """
+    st.markdown("### 📊 Analise de Uso e Rentabilidade")
+
+    # 1. Controles de periodo
+    granularidade, data_ini, data_fim = _f7_render_controles_periodo()
+
+    st.markdown("---")
+
+    # 2. Carregar dados brutos (uma chamada por render)
+    dados = ca.carregar_dados_brutos()
+
+    # 3. Calcular painel do periodo atual
+    painel = ca.calcular_painel_completo(data_ini, data_fim, dados)
+
+    # 4. Calcular periodo anterior (so se periodo for "limpo")
+    data_ini_ant, data_fim_ant = ca.calcular_periodo_anterior(data_ini, data_fim, granularidade)
+    painel_ant = None
+    if data_ini_ant is not None:
+        painel_ant = ca.calcular_painel_completo(data_ini_ant, data_fim_ant, dados)
+
+    # 5. KPIs principais
+    _f7_render_kpis_principais(painel, painel_ant, granularidade)
+
+    st.markdown("---")
+
+    # 6. Receita por ambiente (so rentaveis)
+    _f7_render_receita_por_ambiente(painel)
+
+    st.markdown("---")
+
+    # 7. Heatmap dia x hora
+    _f7_render_heatmap(data_ini, data_fim, dados)
+
+    # 8. Receita extra-espaco (so se houver)
+    _f7_render_receita_extra_espaco(painel)
+
+    # 9. Aviso de receita nao classificada (so se houver)
+    _f7_render_aviso_nao_classificada(painel)
+
+
+# ============================================================================
+# Helpers da aba Analise de Uso (F.7.3)
+# ============================================================================
+
+
+def _f7_formatar_brl(valor):
+    """Formata float como string BRL: 'R$ 1.234,56'.
+
+    Streamlit nao tem formatacao nativa BRL — fazemos o swap manual de
+    separadores (vira-virgula, ponto-virgula) usando placeholder 'X' pra
+    evitar colisao.
+    """
+    if valor is None or pd.isna(valor):
+        return "R$ 0,00"
+    base = f"{valor:,.2f}"  # 1,234.56 (en-US)
+    # 1,234.56 -> 1.234,56 (pt-BR)
+    return "R$ " + base.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _f7_calcular_delta_str(atual, anterior):
+    """Retorna string '+X.X%' ou '-X.X%' pra st.metric, ou None se nao calculavel."""
+    if anterior is None or anterior == 0:
+        return None
+    if atual is None:
+        return None
+    pct = (atual - anterior) / anterior * 100
+    return f"{pct:+.1f}%"
+
+
+def _f7_calcular_ocupacao_media(df_ocup):
+    """Ocupacao media ponderada pelas horas de funcionamento.
+
+    formula: SUM(horas_ocupadas) / SUM(horas_funcionamento) * 100, considerando
+    apenas ambientes RENTAVEIS. Equivale a "fracao das horas-ambiente
+    disponiveis que foram efetivamente ocupadas".
+    """
+    if df_ocup.empty:
+        return 0.0
+    df_rent = df_ocup[df_ocup["rentavel"]]
+    if df_rent.empty:
+        return 0.0
+    total_func = df_rent["horas_funcionamento"].sum()
+    if total_func <= 0:
+        return 0.0
+    total_ocup = df_rent["horas_ocupadas"].sum()
+    return total_ocup / total_func * 100
+
+
+def _f7_render_controles_periodo():
+    """Renderiza controles de periodo no topo da aba.
+
+    Retorna tupla (granularidade_lower, data_ini: date, data_fim: date).
+    granularidade_lower e 'mensal' / 'trimestral' / 'anual' (formato esperado
+    por ca.calcular_periodo_anterior).
+    """
+    col_gran, col_periodo = st.columns([1, 2])
+
+    with col_gran:
+        granularidade = st.radio(
+            "Granularidade",
+            options=["Mensal", "Trimestral", "Anual"],
+            horizontal=True,
+            key="f7_granularidade",
+        )
+
+    hoje = dt.date.today()
+
+    with col_periodo:
+        if granularidade == "Mensal":
+            mes_ref = st.date_input(
+                "Mes de referencia",
+                value=hoje.replace(day=1),
+                format="DD/MM/YYYY",
+                key="f7_mes_ref",
+            )
+            data_ini = mes_ref.replace(day=1)
+            ultimo_dia = _calendar_lib.monthrange(data_ini.year, data_ini.month)[1]
+            data_fim = data_ini.replace(day=ultimo_dia)
+
+        elif granularidade == "Trimestral":
+            col_q, col_a = st.columns(2)
+            with col_q:
+                trimestre_atual = (hoje.month - 1) // 3 + 1
+                opcoes_tri = ["Q1 (jan-mar)", "Q2 (abr-jun)", "Q3 (jul-set)", "Q4 (out-dez)"]
+                tri_label = st.selectbox(
+                    "Trimestre",
+                    options=opcoes_tri,
+                    index=trimestre_atual - 1,
+                    key="f7_trimestre",
+                )
+                trimestre = int(tri_label[1])
+            with col_a:
+                ano = st.number_input(
+                    "Ano",
+                    min_value=2020,
+                    max_value=2050,
+                    value=hoje.year,
+                    step=1,
+                    key="f7_ano_tri",
+                )
+            mes_ini = (trimestre - 1) * 3 + 1
+            mes_fim = mes_ini + 2
+            data_ini = dt.date(int(ano), mes_ini, 1)
+            ultimo_dia = _calendar_lib.monthrange(int(ano), mes_fim)[1]
+            data_fim = dt.date(int(ano), mes_fim, ultimo_dia)
+
+        else:  # Anual
+            ano = st.number_input(
+                "Ano",
+                min_value=2020,
+                max_value=2050,
+                value=hoje.year,
+                step=1,
+                key="f7_ano_anu",
+            )
+            data_ini = dt.date(int(ano), 1, 1)
+            data_fim = dt.date(int(ano), 12, 31)
+
+    return granularidade.lower(), data_ini, data_fim
+
+
+def _f7_render_kpis_principais(painel, painel_ant, granularidade):
+    """4 cards st.metric: receita total, R$/m² rentavel, R$/m² total, ocupacao media."""
+    kpis = painel["kpis"]
+    df_ocup = painel["ocupacao"]
+    ocupacao_media = _f7_calcular_ocupacao_media(df_ocup)
+
+    # Deltas
+    delta_receita = None
+    delta_rent = None
+    delta_total = None
+    delta_ocup = None
+
+    if painel_ant is not None:
+        kpis_ant = painel_ant["kpis"]
+        df_ocup_ant = painel_ant["ocupacao"]
+        ocupacao_media_ant = _f7_calcular_ocupacao_media(df_ocup_ant)
+
+        delta_receita = _f7_calcular_delta_str(kpis["receita_total"], kpis_ant["receita_total"])
+        delta_rent = _f7_calcular_delta_str(kpis["r_por_m2_rentavel"], kpis_ant["r_por_m2_rentavel"])
+        delta_total = _f7_calcular_delta_str(kpis["r_por_m2_total"], kpis_ant["r_por_m2_total"])
+        delta_ocup = _f7_calcular_delta_str(ocupacao_media, ocupacao_media_ant)
+
+    # Texto auxiliar pra cada delta indicando o que e o "anterior"
+    if granularidade == "mensal":
+        ref_anterior = "vs mes anterior"
+    elif granularidade == "trimestral":
+        ref_anterior = "vs trimestre anterior"
+    elif granularidade == "anual":
+        ref_anterior = "vs ano anterior"
+    else:
+        ref_anterior = ""
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric(
+            "Receita total",
+            _f7_formatar_brl(kpis["receita_total"]),
+            delta=delta_receita,
+            help=(
+                "Soma de todos os lancamentos de Entrada no periodo, "
+                "incluindo receita do espaco e extra-espaco. "
+                f"{ref_anterior if delta_receita else ''}"
+            ),
+        )
+    with col2:
+        st.metric(
+            "R$/m² rentavel",
+            _f7_formatar_brl(kpis["r_por_m2_rentavel"]),
+            delta=delta_rent,
+            help=(
+                "Receita do espaco fisico dividida pelos m² rentaveis "
+                "(ambientes que recebem atividades). E o 'negocio em si', "
+                "sem diluicao por areas administrativas. "
+                f"{ref_anterior if delta_rent else ''}"
+            ),
+        )
+    with col3:
+        st.metric(
+            "R$/m² total",
+            _f7_formatar_brl(kpis["r_por_m2_total"]),
+            delta=delta_total,
+            help=(
+                "Receita do espaco fisico dividida pela area TOTAL ativa "
+                "(rentaveis + nao-rentaveis). Pra avaliar eficiencia do "
+                "imovel inteiro, util na decisao de aluguel. "
+                f"{ref_anterior if delta_total else ''}"
+            ),
+        )
+    with col4:
+        st.metric(
+            "Ocupacao media",
+            f"{ocupacao_media:.1f}%",
+            delta=delta_ocup,
+            help=(
+                "Fracao das horas de funcionamento em que ambientes rentaveis "
+                "estiveram ocupados. Sobreposicao de profissionais conta 1x. "
+                f"{ref_anterior if delta_ocup else ''}"
+            ),
+        )
+
+
+def _f7_render_receita_por_ambiente(painel):
+    """Tabela + bar chart de receita por ambiente rentavel."""
+    st.markdown("### 🏢 Receita por ambiente")
+
+    kpis = painel["kpis"]
+    df_ocup = painel["ocupacao"]
+
+    df_rent = df_ocup[df_ocup["rentavel"]] if not df_ocup.empty else pd.DataFrame()
+
+    if df_rent.empty:
+        st.info("Nenhum ambiente rentavel cadastrado. Cadastre em Configuracoes > Ambientes.")
+        return
+
+    # Tabela
+    linhas = []
+    for _, amb in df_rent.iterrows():
+        amb_id = int(amb["ambiente_id"])
+        info = kpis["receita_por_ambiente"].get(amb_id, {"receita": 0.0, "r_por_m2": 0.0})
+        linhas.append({
+            "Ambiente": amb["nome"],
+            "Area (m²)": f"{amb['area_m2']:.0f}",
+            "Receita": _f7_formatar_brl(info["receita"]),
+            "R$/m²": _f7_formatar_brl(info["r_por_m2"]),
+            "Horas ocupadas": f"{amb['horas_ocupadas']:.1f}h",
+            "Ocupacao": f"{amb['ocupacao_pct']:.1f}%",
+        })
+
+    df_render = pd.DataFrame(linhas)
+    st.dataframe(df_render, use_container_width=True, hide_index=True)
+
+    # Bar chart
+    df_chart = pd.DataFrame([
+        {
+            "Ambiente": amb["nome"],
+            "Receita": kpis["receita_por_ambiente"].get(int(amb["ambiente_id"]), {"receita": 0.0})["receita"],
+        }
+        for _, amb in df_rent.iterrows()
+    ])
+
+    if df_chart["Receita"].sum() > 0:
+        fig = px.bar(
+            df_chart,
+            x="Ambiente",
+            y="Receita",
+            color_discrete_sequence=["#2E7D32"],
+        )
+        fig.update_layout(
+            margin=dict(t=10, b=10, l=10, r=10),
+            yaxis_title="Receita (R$)",
+            xaxis_title=None,
+            height=300,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.caption("ℹ️ Sem receita atribuida a ambientes neste periodo.")
+
+
+def _f7_render_heatmap(data_ini, data_fim, dados):
+    """Heatmap de horas ocupadas por slot (dia da semana × hora 5h-23h)."""
+    st.markdown("### 🔥 Heatmap de uso (dia × hora)")
+
+    df_amb_ativos = dados["ambientes"][dados["ambientes"]["ativo"]]
+
+    if df_amb_ativos.empty:
+        st.info("Nenhum ambiente ativo cadastrado.")
+        return
+
+    # Filtro de ambiente
+    opcoes_filtro = {"Todos os ambientes": None}
+    for _, amb in df_amb_ativos.iterrows():
+        label = f"{amb['nome']} ({amb['area_m2']:.0f} m²)"
+        opcoes_filtro[label] = int(amb["id"])
+
+    filtro_label = st.selectbox(
+        "Filtrar por ambiente",
+        options=list(opcoes_filtro.keys()),
+        key="f7_heatmap_filtro",
+        help=(
+            "Quando 'Todos os ambientes' esta selecionado, horas paralelas "
+            "em ambientes diferentes contam separadamente. Ao filtrar por um "
+            "ambiente especifico, sobreposicoes contam 1x."
+        ),
+    )
+    ambiente_filtro = opcoes_filtro[filtro_label]
+
+    df_heat = ca.gerar_dados_heatmap(
+        data_ini, data_fim,
+        dados["agenda_regras"],
+        ambiente_id_filtro=ambiente_filtro,
+    )
+
+    if df_heat["horas_ocupadas"].sum() == 0:
+        st.caption(
+            "ℹ️ Heatmap vazio — sem horas ocupadas no periodo selecionado. "
+            "Verifique se ha regras cadastradas em `agenda_regras` cobrindo essas datas."
+        )
+        return
+
+    # Pivot pra matriz: linhas=hora, colunas=dia_semana
+    df_pivot = df_heat.pivot(index="hora", columns="dia_semana", values="horas_ocupadas")
+
+    # Garantir ordem das colunas (0-6) mesmo se algum dia esta sem dados
+    for d in range(7):
+        if d not in df_pivot.columns:
+            df_pivot[d] = 0.0
+    df_pivot = df_pivot[sorted(df_pivot.columns)]
+
+    nomes_dias = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sab", "Dom"]
+    df_pivot.columns = [nomes_dias[c] for c in df_pivot.columns]
+    df_pivot.index = [f"{h}h" for h in df_pivot.index]
+
+    fig = go.Figure(data=go.Heatmap(
+        z=df_pivot.values,
+        x=df_pivot.columns,
+        y=df_pivot.index,
+        colorscale=[[0, "#f5f5f5"], [1, "#2E7D32"]],
+        hovertemplate="%{x} %{y}<br>%{z:.1f}h ocupadas<extra></extra>",
+        colorbar=dict(title="Horas"),
+    ))
+    fig.update_layout(
+        margin=dict(t=10, b=10, l=10, r=10),
+        height=550,
+        yaxis=dict(autorange="reversed"),
+        xaxis=dict(side="top"),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _f7_render_receita_extra_espaco(painel):
+    """Card de receita que nao usa espaco fisico (Personal, Assessoria, etc).
+
+    Renderizado SO se receita_extra_espaco > 0.
+    """
+    kpis = painel["kpis"]
+
+    if kpis["receita_extra_espaco"] <= 0:
+        return
+
+    st.markdown("---")
+    st.markdown("### 💰 Receita extra-espaco")
+
+    with st.container(border=True):
+        st.caption(
+            "Receitas que **nao usam o espaco fisico** da academia "
+            "(ex: Personal externo, Assessoria online). Nao entram no calculo "
+            "de R$/m²."
+        )
+
+        extras = kpis.get("extras_por_categoria", {})
+        if extras:
+            n_cols = len(extras) + 1
+            cols = st.columns(n_cols)
+            for i, (cat, valor) in enumerate(extras.items()):
+                with cols[i]:
+                    st.metric(cat, _f7_formatar_brl(valor))
+            with cols[-1]:
+                st.metric("Total", _f7_formatar_brl(kpis["receita_extra_espaco"]))
+        else:
+            st.metric("Total", _f7_formatar_brl(kpis["receita_extra_espaco"]))
+
+
+def _f7_render_aviso_nao_classificada(painel):
+    """Aviso amarelo se houver lancamentos com categoria nao mapeada."""
+    kpis = painel["kpis"]
+
+    if kpis["receita_nao_classificada"] <= 0:
+        return
+
+    st.markdown("---")
+    st.warning(
+        f"⚠️ **{_f7_formatar_brl(kpis['receita_nao_classificada'])} em lancamentos nao classificados** "
+        "— categorias que nao batem com nenhuma atividade cadastrada em "
+        "`atividades_entrada`. Esses valores nao entram no calculo de R$/m². "
+        "Verifique typos ou cadastre as categorias faltantes em Configuracoes."
     )
 
 

@@ -10,6 +10,13 @@ Estrutura de abas:
                                  atividades direto no calendario (F.4 / F.5)
     2. Analise de Uso          - graficos e KPIs de ocupacao (F.7)
     3. Horario de Funcionamento - blocos por dia da semana (F.3)
+
+Apos H.3.4: a UI dos forms de regra mostra apenas MODALIDADE. O profissional
+e auto-preenchido com o professor titular da modalidade (modalidades.professor_id)
+e gravado em agenda_regras.profissional_id silenciosamente, pra preservar
+defesa de cobertura futura sem poluir a UI. Se a modalidade selecionada nao
+tem professor titular, o form bloqueia o salvamento e direciona o usuario
+pra Configuracoes > Modalidades.
 """
 
 import calendar as _calendar_lib
@@ -1080,8 +1087,14 @@ def _renderizar_calendario_unico(ambiente, eventos, ano, mes, visao):
     else:
         initial_view = "timeGridWeek"
 
-    initial_date = dt.date(ano, mes, 1).isoformat()
+    # Visao Semanal SEMPRE abre na semana que contem hoje, ignorando o
+    # mes_referencia (decisao H.3.4 — o datepicker so afeta visao Mensal).
+    # O usuario navega entre semanas pelas setas prev/next do FullCalendar.
     is_semanal = (visao == "Semanal")
+    if is_semanal:
+        initial_date = dt.date.today().isoformat()
+    else:
+        initial_date = dt.date(ano, mes, 1).isoformat()
 
     options = {
         "headerToolbar": {
@@ -1244,8 +1257,10 @@ def _inserir_regra(
     modalidade_id: int. Apos H.3, e obrigatorio (UI bloqueia cadastro
                    sem modalidade). Mas a coluna no banco e nullable
                    pra suportar regras orfas em casos extremos.
-    profissional_id: int. Quem efetivamente da a aula. Pode ser diferente
-                    do professor titular da modalidade (caso de cobertura).
+    profissional_id: int. Quem efetivamente da a aula. Apos H.3.4 o usuario
+                    nao escolhe — vem auto de modalidades.professor_id.
+                    A coluna agenda_regras.profissional_id continua sendo
+                    gravada pra suportar cobertura futura via outro caminho.
     data_inicio: date object. Se None, usa hoje (default uso continuo).
     data_fim: date object ou None. Default None (regra recorrente sem fim).
               Usado quando regra ja foi encerrada no passado (cadastro historico).
@@ -1308,9 +1323,10 @@ def _renderizar_caixa_acao():
     """Caixa de acao lateral (coluna direita do layout 60/40).
 
     Le `f5_acao_pendente` em session_state e renderiza:
-    - tipo='menu_bloco': menu com 3 opcoes (encerrar / cadastrar nova / cancelar)
+    - tipo='menu_bloco': menu com 4 opcoes (encerrar / cadastrar nova / editar / cancelar)
     - tipo='criar': form de cadastro
     - tipo='encerrar': form de encerramento
+    - tipo='editar': form de edicao
     - sem chave: dica de uso
     """
     acao = st.session_state.get("f5_acao_pendente")
@@ -1370,10 +1386,6 @@ def _renderizar_menu_bloco(acao):
 
         regra = df_regra.iloc[0]
 
-        # Lookup do profissional (quem efetivamente da a aula)
-        df_prof = buscar_dados("profissionais", eq={"id": int(regra["profissional_id"])})
-        profissional_nome = df_prof.iloc[0]["nome"] if not df_prof.empty else "?"
-
         # Lookup da modalidade (apos H.3). Pode ser NULL/orfa.
         modalidade_id = regra.get("modalidade_id")
         modalidade_nome = None
@@ -1385,11 +1397,10 @@ def _renderizar_menu_bloco(acao):
         hora_ini_str = str(regra["hora_inicio"])[:5]
         hora_fim_str = str(regra["hora_fim"])[:5]
 
-        # Resumo do bloco
+        # Resumo do bloco — sem mencao de profissional (decisao H.3.4)
         if modalidade_nome:
             st.markdown(
-                f"**{modalidade_nome}** com **{profissional_nome}**, "
-                f"{hora_ini_str} - {hora_fim_str}"
+                f"**{modalidade_nome}**, {hora_ini_str} - {hora_fim_str}"
             )
         else:
             # Regra orfa: aviso visual leve pra usuario corrigir via Editar
@@ -1398,7 +1409,7 @@ def _renderizar_menu_bloco(acao):
                 "Use **Editar** abaixo pra definir uma modalidade."
             )
             st.markdown(
-                f"**{profissional_nome}**, {hora_ini_str} - {hora_fim_str}"
+                f"{hora_ini_str} - {hora_fim_str}"
             )
 
         st.markdown("---")
@@ -1472,9 +1483,10 @@ def _renderizar_form_criar_regra(acao):
     Renderizado dentro de container destacado abaixo dos calendarios
     quando `f5_acao_pendente` tem tipo='criar'.
 
-    Apos H.3, usuario escolhe MODALIDADE primeiro. Profissional e
-    auto-preenchido com o professor titular da modalidade, mas pode
-    ser trocado (caso de cobertura).
+    Apos H.3.4: usuario escolhe APENAS modalidade. Profissional vem
+    auto de modalidades.professor_id e e gravado silenciosamente em
+    agenda_regras.profissional_id. Se a modalidade nao tem titular,
+    o salvamento e bloqueado.
     """
     ambiente_id = acao["ambiente_id"]
     start_iso = acao["start_iso"]
@@ -1499,20 +1511,12 @@ def _renderizar_form_criar_regra(acao):
     ambiente_nome = df_amb.iloc[0]["nome"] if not df_amb.empty else "?"
 
     df_mod = buscar_dados("modalidades", eq={"ativo": True}, order="nome")
-    df_prof = buscar_dados("profissionais", eq={"ativo": True}, order="nome")
 
     st.markdown("##### ➕ Cadastrar nova regra")
 
     with st.container(border=True):
         if df_mod.empty:
             st.warning("Nenhuma modalidade ativa cadastrada. Cadastre em Configuracoes > Modalidades antes.")
-            if st.button("Fechar", key=f"f5_form_criar_close_{cal_key}"):
-                st.session_state.pop("f5_acao_pendente", None)
-                st.rerun()
-            return
-
-        if df_prof.empty:
-            st.warning("Nenhum profissional ativo cadastrado. Cadastre em Configuracoes > Professores antes.")
             if st.button("Fechar", key=f"f5_form_criar_close_{cal_key}"):
                 st.session_state.pop("f5_acao_pendente", None)
                 st.rerun()
@@ -1597,28 +1601,22 @@ def _renderizar_form_criar_regra(acao):
         )
         modalidade_id = modalidades_dict[modalidade_nome]
 
-        # Professor: default = professor titular da modalidade selecionada,
-        # mas usuario pode trocar (caso de cobertura)
+        # Profissional: auto via modalidade.professor_id (decisao H.3.4 — UI so com modalidade).
+        # A coluna agenda_regras.profissional_id continua sendo gravada pra defesa
+        # de cobertura futura, mas o usuario nao escolhe — o codigo busca sozinho.
         modalidade_row = df_mod[df_mod["id"] == modalidade_id].iloc[0]
-        prof_padrao_id = modalidade_row.get("professor_id")
+        prof_titular_id = modalidade_row.get("professor_id")
 
-        profissionais_dict = {row["nome"]: int(row["id"]) for _, row in df_prof.iterrows()}
-        opcoes_prof = list(profissionais_dict.keys())
-
-        # Pre-seleciona o professor titular se ele esta na lista de ativos
-        idx_prof_default = 0
-        if pd.notna(prof_padrao_id) and int(prof_padrao_id) in profissionais_dict.values():
-            nome_padrao = [k for k, v in profissionais_dict.items() if v == int(prof_padrao_id)][0]
-            idx_prof_default = opcoes_prof.index(nome_padrao)
-
-        profissional_nome = st.selectbox(
-            "Profissional",
-            options=opcoes_prof,
-            index=idx_prof_default,
-            help="Por padrao usa o professor titular da modalidade. Troque se for cobertura.",
-            key=f"f5_form_criar_prof_{cal_key}",
-        )
-        profissional_id = profissionais_dict[profissional_nome]
+        erro_modalidade = None
+        if pd.isna(prof_titular_id):
+            erro_modalidade = (
+                f"⚠️ A modalidade **{modalidade_nome}** nao tem professor titular. "
+                f"Edite em Configuracoes > Modalidades antes de cadastrar regra."
+            )
+            st.error(erro_modalidade)
+            profissional_id = None
+        else:
+            profissional_id = int(prof_titular_id)
 
         st.markdown("---")
         col_cancel, col_ok = st.columns([1, 1])
@@ -1634,7 +1632,7 @@ def _renderizar_form_criar_regra(acao):
                 key=f"f5_form_criar_ok_{cal_key}",
                 type="primary",
                 use_container_width=True,
-                disabled=(erro_hora is not None),
+                disabled=(erro_hora is not None or erro_modalidade is not None),
             ):
                 with st.spinner("Cadastrando..."):
                     sucesso = _inserir_regra(
@@ -1674,10 +1672,7 @@ def _renderizar_form_encerrar_regra(acao):
 
         regra = df_regra.iloc[0]
 
-        df_prof = buscar_dados("profissionais", eq={"id": int(regra["profissional_id"])})
         df_amb = buscar_dados("ambientes", eq={"id": int(regra["ambiente_id"])})
-
-        profissional_nome = df_prof.iloc[0]["nome"] if not df_prof.empty else "?"
         ambiente_nome = df_amb.iloc[0]["nome"] if not df_amb.empty else "?"
 
         # Lookup da modalidade (apos H.3). Pode ser NULL/orfa.
@@ -1703,7 +1698,6 @@ def _renderizar_form_encerrar_regra(acao):
             st.markdown(f"**Modalidade:** {modalidade_nome}")
         else:
             st.markdown("**Modalidade:** (sem modalidade)")
-        st.markdown(f"**Profissional:** {profissional_nome}")
         st.markdown(f"**Ambiente:** {ambiente_nome}")
         st.markdown(f"**Dia:** Toda {dia_nome.lower()}, {hora_ini_str} - {hora_fim_str}")
         st.markdown(f"**Vigente desde:** {data_inicio_obj.strftime('%d/%m/%Y')}")
@@ -1775,7 +1769,8 @@ def _renderizar_form_encerrar_regra(acao):
 def _renderizar_form_editar_regra(acao):
     """Form inline de edicao de regra existente.
 
-    Permite mudar dia_semana e horario. Profissional/ambiente nao editaveis.
+    Permite mudar modalidade, dia_semana e horario. Ambiente nao editavel.
+    Profissional vem auto da modalidade selecionada (decisao H.3.4 — sem UI).
 
     Logica de aplicacao da edicao (preserva historico):
     - data_aplicar > data_inicio_original: encerra antiga + cria nova
@@ -1801,8 +1796,6 @@ def _renderizar_form_editar_regra(acao):
 
         df_mod_todas = buscar_dados("modalidades", order="nome")
         df_mod_ativas = df_mod_todas[df_mod_todas["ativo"]] if not df_mod_todas.empty else pd.DataFrame()
-        df_prof_todos = buscar_dados("profissionais", order="nome")
-        df_prof_ativos = df_prof_todos[df_prof_todos["ativo"]] if not df_prof_todos.empty else pd.DataFrame()
         df_amb = buscar_dados("ambientes", eq={"id": int(regra["ambiente_id"])})
 
         ambiente_nome = df_amb.iloc[0]["nome"] if not df_amb.empty else "?"
@@ -1831,15 +1824,8 @@ def _renderizar_form_editar_regra(acao):
         if pd.isna(modalidade_atual_id):
             modalidade_atual_nome = "(sem modalidade)"
 
-        profissional_atual_nome = "?"
-        if pd.notna(profissional_atual_id) and not df_prof_todos.empty:
-            prof_row = df_prof_todos[df_prof_todos["id"] == int(profissional_atual_id)]
-            if not prof_row.empty:
-                profissional_atual_nome = prof_row.iloc[0]["nome"]
-
         # Resumo (nao editavel)
         st.markdown(f"**Modalidade atual:** {modalidade_atual_nome}")
-        st.markdown(f"**Profissional atual:** {profissional_atual_nome}")
         st.markdown(f"**Ambiente:** {ambiente_nome}")
         st.caption(
             f"Atual: {nomes_dias[dia_atual]}, {hora_ini_atual_str} - {hora_fim_atual_str}, "
@@ -1853,13 +1839,6 @@ def _renderizar_form_editar_regra(acao):
         if df_mod_ativas.empty:
             st.warning("Nenhuma modalidade ativa cadastrada. Cadastre em Configuracoes > Modalidades antes.")
             if st.button("Fechar", key=f"f5_form_edit_close_no_mod_{regra_id}"):
-                st.session_state.pop("f5_acao_pendente", None)
-                st.rerun()
-            return
-
-        if df_prof_ativos.empty:
-            st.warning("Nenhum profissional ativo cadastrado. Cadastre em Configuracoes > Professores antes.")
-            if st.button("Fechar", key=f"f5_form_edit_close_no_prof_{regra_id}"):
                 st.session_state.pop("f5_acao_pendente", None)
                 st.rerun()
             return
@@ -1888,29 +1867,21 @@ def _renderizar_form_editar_regra(acao):
         )
         modalidade_nova_id = modalidades_dict[modalidade_nova_nome]
 
-        # Professor: lista ativos + atual (se inativo)
-        df_prof_disp = df_prof_ativos.copy()
-        if pd.notna(profissional_atual_id):
-            prof_atual_row = df_prof_todos[df_prof_todos["id"] == int(profissional_atual_id)]
-            if not prof_atual_row.empty and not prof_atual_row.iloc[0]["ativo"]:
-                df_prof_disp = pd.concat([df_prof_disp, prof_atual_row], ignore_index=True)
+        # Profissional: auto via modalidade.professor_id da NOVA modalidade
+        # selecionada (decisao H.3.4 — UI so com modalidade). Se a nova
+        # modalidade nao tem professor titular, bloqueia a edicao com erro.
+        modalidade_nova_row = df_mod_disp[df_mod_disp["id"] == modalidade_nova_id].iloc[0]
+        prof_titular_novo_id = modalidade_nova_row.get("professor_id")
 
-        profissionais_dict = {row["nome"]: int(row["id"]) for _, row in df_prof_disp.iterrows()}
-        opcoes_prof = list(profissionais_dict.keys())
-
-        idx_prof_default = 0
-        if pd.notna(profissional_atual_id) and int(profissional_atual_id) in profissionais_dict.values():
-            nome_atual = [k for k, v in profissionais_dict.items() if v == int(profissional_atual_id)][0]
-            idx_prof_default = opcoes_prof.index(nome_atual)
-
-        profissional_novo_nome = st.selectbox(
-            "Profissional",
-            options=opcoes_prof,
-            index=idx_prof_default,
-            help="Por padrao usa o professor titular da modalidade. Troque se for cobertura.",
-            key=f"f5_form_edit_prof_{regra_id}",
-        )
-        profissional_novo_id = profissionais_dict[profissional_novo_nome]
+        erro_modalidade = None
+        if pd.isna(prof_titular_novo_id):
+            erro_modalidade = (
+                f"A modalidade {modalidade_nova_nome} nao tem professor titular. "
+                f"Edite em Configuracoes > Modalidades antes de aplicar a edicao."
+            )
+            profissional_novo_id = None
+        else:
+            profissional_novo_id = int(prof_titular_novo_id)
 
         # Dia da semana editavel
         dia_novo_nome = st.selectbox(
@@ -1966,6 +1937,8 @@ def _renderizar_form_editar_regra(acao):
                 f"Data de aplicacao ({data_aplicar.strftime('%d/%m/%Y')}) nao pode "
                 f"ser anterior ao inicio da regra ({data_inicio_obj.strftime('%d/%m/%Y')})."
             )
+        elif erro_modalidade is not None:
+            erro = erro_modalidade
 
         # Verifica se houve mudanca de fato
         hora_inicio_nova_str = hora_inicio_t.strftime("%H:%M")
@@ -2057,8 +2030,9 @@ def _editar_regra(
     1. data_aplicar == data_inicio_original: UPDATE direto (sem historico)
     2. data_aplicar > data_inicio_original: encerra antiga + cria nova
 
-    Apos H.3, edicao tambem permite trocar modalidade e profissional
-    (alem de dia_semana e horario que ja existia antes).
+    Apos H.3.4, edicao permite trocar modalidade, dia_semana e horario.
+    O profissional vem auto da modalidade (sem UI), mas a coluna
+    profissional_id continua sendo escrita normalmente.
 
     Retorna True se nao houve excecao.
     """
@@ -2112,23 +2086,15 @@ def _renderizar_form_regra_historica():
     Renderizado quando `f5_hist_aberto` em session_state e True.
     Mesmo conteudo do antigo @st.dialog, mas inline no expander.
 
-    Apos H.3, modalidade tambem e obrigatoria. Profissional auto-preenche
-    com o titular da modalidade mas pode ser trocado.
+    Apos H.3.4: usuario escolhe APENAS modalidade. Profissional vem
+    auto de modalidades.professor_id (sem UI).
     """
     df_mod = buscar_dados("modalidades", eq={"ativo": True}, order="nome")
-    df_prof = buscar_dados("profissionais", eq={"ativo": True}, order="nome")
     df_amb = buscar_dados("ambientes", eq={"ativo": True})
 
     if df_mod.empty:
         st.warning("Nenhuma modalidade ativa cadastrada. Cadastre em Configuracoes > Modalidades antes.")
         if st.button("Fechar", key="f5_hist_close_no_mod"):
-            st.session_state.pop("f5_hist_aberto", None)
-            st.rerun()
-        return
-
-    if df_prof.empty:
-        st.warning("Nenhum profissional ativo cadastrado. Cadastre em Configuracoes > Professores antes.")
-        if st.button("Fechar", key="f5_hist_close_no_prof"):
             st.session_state.pop("f5_hist_aberto", None)
             st.rerun()
         return
@@ -2149,26 +2115,20 @@ def _renderizar_form_regra_historica():
     )
     modalidade_id = modalidades_dict[modalidade_nome]
 
-    # Profissional: default = professor titular da modalidade
+    # Profissional: auto via modalidade.professor_id (decisao H.3.4 — UI so com modalidade).
     modalidade_row = df_mod[df_mod["id"] == modalidade_id].iloc[0]
-    prof_padrao_id = modalidade_row.get("professor_id")
+    prof_titular_id = modalidade_row.get("professor_id")
 
-    profissionais_dict = {row["nome"]: int(row["id"]) for _, row in df_prof.iterrows()}
-    opcoes_prof = list(profissionais_dict.keys())
-
-    idx_prof_default = 0
-    if pd.notna(prof_padrao_id) and int(prof_padrao_id) in profissionais_dict.values():
-        nome_padrao = [k for k, v in profissionais_dict.items() if v == int(prof_padrao_id)][0]
-        idx_prof_default = opcoes_prof.index(nome_padrao)
-
-    profissional_nome = st.selectbox(
-        "Profissional",
-        options=opcoes_prof,
-        index=idx_prof_default,
-        help="Por padrao usa o professor titular da modalidade. Troque se foi cobertura.",
-        key="f5_hist_prof",
-    )
-    profissional_id = profissionais_dict[profissional_nome]
+    erro_modalidade = None
+    if pd.isna(prof_titular_id):
+        erro_modalidade = (
+            f"A modalidade {modalidade_nome} nao tem professor titular. "
+            f"Edite em Configuracoes > Modalidades antes de cadastrar regra historica."
+        )
+        st.error(erro_modalidade)
+        profissional_id = None
+    else:
+        profissional_id = int(prof_titular_id)
 
     ambientes_dict = {row["nome"]: int(row["id"]) for _, row in df_amb.iterrows()}
     ambiente_nome = st.selectbox(
@@ -2233,6 +2193,8 @@ def _renderizar_form_regra_historica():
         erro = "Hora fim deve ser maior que hora inicio."
     elif not em_andamento and data_fim < data_inicio:
         erro = "Data 'Ate' deve ser maior ou igual a data 'De'."
+    elif erro_modalidade is not None:
+        erro = erro_modalidade
 
     if erro:
         st.error(erro)

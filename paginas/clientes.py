@@ -225,9 +225,13 @@ def render():
                         if not planos_r:
                             st.error("Selecione ao menos um serviço para reativar o contrato.")
                         else:
+                            # P.1: NAO apagamos data_cancelamento na reativacao.
+                            # A coluna preserva o historico do ultimo cancelamento;
+                            # data_ultima_ativacao marca quando o aluno voltou.
+                            # A logica de Pagamentos usa essas duas datas pra saber
+                            # em quais meses o aluno esteve ativo.
                             atualizar_dados('alunos', {
                                 'ativo': 1,
-                                'data_cancelamento': "",
                                 'data_ultima_ativacao': str(data_reativacao),
                                 'planos': json.dumps(planos_r, ensure_ascii=False),
                                 'valor_total': total_r
